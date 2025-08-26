@@ -1,8 +1,15 @@
 # URD - Universal Robots Daemon
 
-**Pure Rust implementation of Universal Robots RTDE protocol with integrated command streaming and monitoring.**
+**Daemonic Rust interface to a Universal Robot with interpretted command streaming and RTDE monitoring.**
 
-URD is a high-performance, memory-safe daemon for Universal Robots that combines command streaming with real-time monitoring in a single binary. It provides both interpreter mode command execution and RTDE-based state monitoring with configurable output formats.
+URD is a high-performance, memory-safe daemon for Universal Robots that combines command streaming with real-time monitoring in a single binary. It provides both interpreter mode command execution and RTDE-based state monitoring.
+
+Rather than integrating a library into an existing program, this codebase is designed to function as a single complete daemon, which acts an interface node between other programs and the UR hardware (or simulated hardware). This is intended to be a minimal out-of-the-box "sender" to get you running whatever generated robot behavior your heart desires without having to bother with the bits and bobs of the actual robot. It is designed for scripting-style applications involving programatically generated waypoints and positional telemetry. It is not designed for complex closed-loop behaviors, nor low-latency control.
+
+## Hedge
+I generated this almost 100% with Claude Code. The architecture is based on practical experience, but i do not vouch for the quality or indeed the functionality of this code beyond my own empirical testing. This deserves close examination at some point (we'll call that v1.0), but is for prototyping, non-production uses only, despite what Claude might claim elsewhere in this readme.
+
+-----------------------------------------------------------------
 
 ## 🖥️ Supported Platforms
 
@@ -12,8 +19,7 @@ URD is a high-performance, memory-safe daemon for Universal Robots that combines
 
 ## 📋 Prerequisites
 
-- **Nix** package manager
-- **Rust toolchain** (1.70+)
+- **Nix** package manager (includes Rust toolchain automatically)
 - **Docker** for robot simulation
 
 ### Installing Docker
@@ -41,20 +47,31 @@ brew install --cask docker
 # Enter Nix shell with all dependencies
 nix develop
 
-# Optional: start sim (not needed if you have a real robot)
-start-sim
-
-# Initialize robot (only needed if the robot is waking up for the first time)
-ur-init
-
-# run the daemon
+# Run the daemon (uses default simulator config)
 urd
+
+# For hardware robot, specify config:
+# urd --config config/hw_config.yaml
 
 # alternatively: pipe a urscript into the daemon
 cat paths/path.txt | urd
 
 ```
 
+### Optional: Robot Simulation
+
+If you want to test with a simulated robot:
+
+```bash
+# Start the robot simulator (Docker required)
+start-sim
+
+# Initialize robot (may be required on first power-on)
+ur-init
+
+# Stop the simulator when done
+stop-sim
+```
 
 ## 🏗️ Architecture
 
@@ -139,55 +156,131 @@ Universal Robots interpreter mode client for validated command execution.
 - Emergency abort signaling
 
 ### `config.rs`
-YAML-based configuration system with daemon and robot-specific settings.
+YAML-based configuration system with unified settings.
 
 **Key Features:**
-- Two-tier configuration (daemon + robot-specific)
-- Publishing rate, monitoring mode, and precision settings
+- Unified single-file configuration structure
+- Command line argument and environment variable support
+- Publishing rate, monitoring mode, and precision settings  
 - Robot connection parameters and movement settings
-- Hot-reloadable configuration support
+- Flexible configuration loading with explicit paths
 
 ## 🔧 Configuration
 
-URD uses a two-tier configuration system:
+URD uses a unified single-file configuration system. All settings are contained in one YAML file.
 
-### Daemon Configuration (`config/daemon_config.yaml`)
-Global settings shared across robot configurations:
-
-```yaml
-robot:
-  config_path: "robot/sim.yaml"  # Robot-specific config
-
-command:
-  monitor_execution: true          # Enable RTDE monitoring
-  stream_robot_state: "dynamic"    # Output mode: false, true, "dynamic"
-  interpreter_timeout: 10.0        # Command timeout seconds
-
-publishing:
-  pub_rate_hz: 5                   # Position data rate limit
-  decimal_places: 4                # Number formatting precision
-```
-
-### Robot Configuration (`config/robot/*.yaml`)
-Robot-specific connection and movement parameters:
+### Configuration Structure
 
 ```yaml
+# Robot connection and hardware settings
 robot:
   host: "localhost"                # Robot IP address
   ports:
     primary: 30001                 # URScript commands
-    dashboard: 29999               # Robot control
+    dashboard: 29999               # Robot control  
     rtde: 30004                    # Real-time data
-    interpreter: 30020             # Interpreter mode
-
-  connection:
-    timeout: 10.0                  # Connection timeout
-    retries: 3                     # Retry attempts
-
+    interpreter: 30020             # Interpreter mode (optional)
+    secondary: 30002               # Secondary interface (optional)
+    realtime: 30003                # Real-time interface (optional)
+  
+  # Tool center point offset
+  tcp_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  
+  # Movement parameters
   movement:
-    default_acceleration: 0.1      # Default movement acceleration
-    default_velocity: 0.1          # Default movement velocity
+    speed: 0.1                     # m/s
+    acceleration: 0.1              # m/s²
+    blend_radius: 0.01             # m
+  
+  # Connection settings
+  connection:
+    timeout: 10.0                  # seconds
+    retry_attempts: 3
+    retry_delay: 2.0               # seconds
+  
+  model: "UR10e"                   # Robot model (optional)
+
+# Publishing and monitoring settings
+publishing:
+  pub_rate_hz: 10                  # Position data rate limit (Hz)
+  decimal_places: 4                # Number formatting precision
+
+# Command execution settings
+command:
+  monitor_execution: true          # Enable RTDE monitoring
+  stream_robot_state: "dynamic"    # Output mode: false, true, "dynamic"
 ```
+
+### Configuration Loading
+
+URD requires a configuration file path to be specified:
+
+```bash
+# Via command line argument (highest priority)
+urd --config path/to/config.yaml
+
+# Via environment variable (fallback)
+export DEFAULT_CONFIG_PATH="/path/to/config.yaml"
+urd
+
+# In Nix shell (automatic default)
+nix develop  # Sets DEFAULT_CONFIG_PATH automatically
+urd
+```
+
+### Example Configurations
+
+**Simulator Configuration** (`config/default_config.yaml`):
+```yaml
+robot:
+  host: "localhost"
+  ports: {primary: 30001, rtde: 30004, dashboard: 29999}
+  tcp_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  movement: {speed: 0.1, acceleration: 0.1, blend_radius: 0.01}
+  connection: {timeout: 10.0, retry_attempts: 3, retry_delay: 2.0}
+publishing: {pub_rate_hz: 10, decimal_places: 4}
+command: {monitor_execution: true, stream_robot_state: "dynamic"}
+```
+
+**Hardware Robot Configuration** (`config/hw_config.yaml`):
+```yaml
+robot:
+  host: "192.168.0.11"  # Real robot IP
+  ports:
+    primary: 30001
+    rtde: 30004
+    dashboard: 29999
+    interpreter: 30020
+    secondary: 30002
+    realtime: 30003
+  model: "UR10e"
+  tcp_offset: [0.0, 0.2, 0.0, 0.0, 0.0, 0.0]  # Tool offset
+  movement: {speed: 0.1, acceleration: 0.1, blend_radius: 0.01}
+  connection: {timeout: 10.0, retry_attempts: 3, retry_delay: 2.0}
+publishing: {pub_rate_hz: 10, decimal_places: 4}
+command: {monitor_execution: true, stream_robot_state: "dynamic"}
+```
+
+## 🖥️ Command Line Interface
+
+URD provides a clean command line interface with help:
+
+```bash
+$ urd --help
+Universal Robots Daemon - Command interpreter with real-time monitoring
+
+Usage: urd [OPTIONS]
+
+Options:
+  -c, --config <CONFIG>  Path to the daemon configuration file
+  -h, --help             Print help
+  -V, --version          Print version
+```
+
+Configuration path resolution follows this priority:
+1. **Command line argument** (`--config` or `-c`) - highest priority
+2. **Environment variable** (`DEFAULT_CONFIG_PATH`) - fallback
+3. **Error if neither provided** - explicit configuration required
 
 ## 📊 Monitoring Modes
 
@@ -237,7 +330,13 @@ All URScript commands are validated before execution:
 
 ### Interactive Command Streaming
 ```bash
-./target/release/urd
+# In Nix shell (recommended)
+nix develop
+urd
+
+# Or with explicit config
+urd --config config/hw_config.yaml
+
 # Type URScript commands directly:
 movej([0, -1.57, 0, -1.57, 0, 0], a=0.1, v=0.1)
 popup("Hello from robot!")
@@ -245,25 +344,48 @@ popup("Hello from robot!")
 
 ### File-based Execution
 ```bash
-# Execute script file
-cat my_script.ur | ./target/release/urd
+# Execute script file (Nix shell)
+cat paths/path.txt | urd
+
+# Or with explicit config
+cat my_script.ur | urd --config config/hw_config.yaml
 
 # Pipeline commands
-echo 'popup("Starting...")' | ./target/release/urd
+echo 'popup("Starting...")' | urd
 ```
 
-### Environment Variables
+### Configuration Options
 ```bash
-# Disable monitoring
-UR_DISABLE_MONITORING=1 ./target/release/urd
+# Use hardware robot config
+urd --config config/hw_config.yaml
 
+# Use simulator config
+urd --config config/default_config.yaml
+
+# Custom config file
+urd --config /path/to/custom_config.yaml
+
+# Environment variable (fallback)
+DEFAULT_CONFIG_PATH="/path/to/config.yaml" urd
+```
+
+### Development and Debugging
+```bash
 # Custom log level
-RUST_LOG=debug ./target/release/urd
+RUST_LOG=debug urd
+
+# Build and run directly
+nix develop
+cargo build --release
+./target/release/urd --config config/hw_config.yaml
 ```
 
 ## 🧪 Testing
 
 ```bash
+# Enter development environment
+nix develop
+
 # Check compilation
 cargo check
 
@@ -274,7 +396,7 @@ cargo test
 cargo build --release
 
 # Run with debug logging
-RUST_LOG=debug cargo run --bin urd
+RUST_LOG=debug cargo run --bin urd -- --config config/default_config.yaml
 ```
 
 ## 📈 Performance
@@ -302,17 +424,5 @@ thiserror = "1.0"                   # Error types
 regex = "1.0"                       # Pattern matching
 tracing = "0.1"                     # Structured logging
 tracing-subscriber = "0.3"          # Log formatting
+clap = { features = ["derive"] }    # Command line argument parsing
 ```
-
-## 🏆 Design Philosophy
-
-URD prioritizes:
-
-1. **Safety First**: Multiple emergency stop mechanisms and state validation
-2. **Real-time Performance**: 125Hz monitoring with <10ms command latency  
-3. **Memory Safety**: Pure Rust implementation with zero unsafe code
-4. **Zero Dependencies**: No C++ libraries or external protocol implementations
-5. **Production Ready**: Comprehensive error handling and structured logging
-6. **Maintainable**: Clear module separation and extensive documentation
-
-This makes URD suitable for both development and production robot control applications.
