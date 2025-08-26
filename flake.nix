@@ -44,10 +44,21 @@
             # Get the repository root directory
             REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
             
+            # Set default config path environment variable (if not already set)
+            export DEFAULT_CONFIG_PATH=''${DEFAULT_CONFIG_PATH:-"$REPO_ROOT/config/default_config.yaml"}
+            
             alias start-sim="$REPO_ROOT/scripts/start-sim.sh"
             alias stop-sim="$REPO_ROOT/scripts/stop-sim.sh"
             alias ur-init="$REPO_ROOT/scripts/ur-init.sh"
-            alias urd="$REPO_ROOT/target/release/urd || (cd $REPO_ROOT && cargo build --release --bin urd && $REPO_ROOT/target/release/urd)"
+            
+            # Function to handle urd with arguments
+            urd() {
+              if [ -f "$REPO_ROOT/target/release/urd" ]; then
+                "$REPO_ROOT/target/release/urd" "$@"
+              else
+                (cd "$REPO_ROOT" && cargo build --release --bin urd && "$REPO_ROOT/target/release/urd" "$@")
+              fi
+            }
           '';
         };
       }

@@ -86,7 +86,10 @@ impl Config {
 
 impl DaemonConfig {
     pub fn load() -> Result<Self> {
-        let config_path = "config/daemon_config.yaml";
+        Self::load_from_path("config/default_config.yaml")
+    }
+    
+    pub fn load_from_path(config_path: &str) -> Result<Self> {
         let contents = fs::read_to_string(config_path)
             .map_err(|e| URError::Config(format!("Failed to read {}: {}", config_path, e)))?;
         

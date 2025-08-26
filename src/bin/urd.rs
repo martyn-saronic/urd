@@ -10,9 +10,33 @@ use urd::{RobotController, CommandStream};
 use anyhow::{Context, Result};
 use tracing::{info, error};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(name = "urd")]
+#[command(about = "Universal Robots Daemon - Command interpreter with real-time monitoring")]
+#[command(version)]
+struct Args {
+    /// Path to the daemon configuration file
+    #[arg(short, long)]
+    config: Option<String>,
+}
+
+impl Args {
+    fn get_config_path(&self) -> String {
+        self.config
+            .clone()
+            .or_else(|| std::env::var("DEFAULT_CONFIG_PATH").ok())
+            .unwrap_or_else(|| "config/default_config.yaml".to_string())
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse command line arguments
+    let args = Args::parse();
+    let config_path = args.get_config_path();
+    
     // Initialize tracing subscriber
     std::env::set_var("RUST_LOG", "info");
     tracing_subscriber::fmt()
@@ -24,10 +48,11 @@ async fn main() -> Result<()> {
     // Banner
     info!("Universal Robots Interpreter (Rust)");
     info!("{}", "=".repeat(50));
+    info!("Using config: {}", config_path);
     
-    // Initialize robot controller
+    // Initialize robot controller with custom config path
     info!("Starting robot initialization");
-    let mut controller = RobotController::new()
+    let mut controller = RobotController::new_with_config(Some(&config_path))
         .context("Failed to create robot controller")?;
     
     // Get monitoring setting from config
