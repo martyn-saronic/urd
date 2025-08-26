@@ -4,61 +4,58 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use crate::{Result, URError};
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Config {
-    pub robot: RobotConfig,
-}
+// Config is now just an alias for DaemonConfig since everything is flattened
+pub type Config = DaemonConfig;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RobotConfig {
     pub host: String,
     pub ports: PortConfig,
     pub tcp_offset: [f64; 6],
     pub movement: MovementConfig,
     pub connection: ConnectionConfig,
+    pub model: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PortConfig {
     pub primary: u16,
     pub rtde: u16,
     pub dashboard: u16,
+    pub secondary: Option<u16>,
+    pub realtime: Option<u16>,
+    pub interpreter: Option<u16>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MovementConfig {
     pub speed: f64,
     pub acceleration: f64,
     pub blend_radius: f64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ConnectionConfig {
     pub timeout: f64,
     pub retry_attempts: u32,
     pub retry_delay: f64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DaemonConfig {
-    pub robot: DaemonRobotConfig,
+    pub robot: RobotConfig,
     pub publishing: PublishingConfig,
     pub command: CommandConfig,
     pub interpreter: Option<InterpreterConfig>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct DaemonRobotConfig {
-    pub config_path: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PublishingConfig {
     pub pub_rate_hz: u32,
     pub decimal_places: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommandConfig {
     pub monitor_execution: bool,
     pub stream_robot_state: String,
@@ -73,22 +70,9 @@ pub struct InterpreterConfig {
     pub initialization_timeout_seconds: Option<u64>,
 }
 
-impl Config {
-    pub fn load_robot_config(config_path: &str) -> Result<Self> {
-        let full_path = format!("config/{}", config_path);
-        let contents = fs::read_to_string(&full_path)
-            .map_err(|e| URError::Config(format!("Failed to read {}: {}", full_path, e)))?;
-        
-        let config: Config = serde_yaml::from_str(&contents)?;
-        Ok(config)
-    }
-}
+// Config is now just an alias for DaemonConfig, so no separate implementation needed
 
 impl DaemonConfig {
-    pub fn load() -> Result<Self> {
-        Self::load_from_path("config/default_config.yaml")
-    }
-    
     pub fn load_from_path(config_path: &str) -> Result<Self> {
         let contents = fs::read_to_string(config_path)
             .map_err(|e| URError::Config(format!("Failed to read {}: {}", config_path, e)))?;

@@ -43,22 +43,13 @@ pub struct RobotController {
 }
 
 impl RobotController {
-    /// Create a new robot controller with default configuration
-    pub fn new() -> Result<Self> {
-        Self::new_with_config(None)
-    }
-    
-    /// Create a new robot controller with custom daemon config path
-    pub fn new_with_config(daemon_config_path: Option<&str>) -> Result<Self> {
-        let daemon_config = match daemon_config_path {
-            Some(path) => DaemonConfig::load_from_path(path)?,
-            None => DaemonConfig::load()?,
-        };
-        let config = Config::load_robot_config(&daemon_config.robot.config_path)?;
+    /// Create a new robot controller with daemon config path
+    pub fn new_with_config(daemon_config_path: &str) -> Result<Self> {
+        let config = DaemonConfig::load_from_path(daemon_config_path)?;
         
         Ok(Self {
-            config,
-            daemon_config,
+            config: config.clone(),
+            daemon_config: config,
             primary_socket: None,
             dashboard_socket: None,
             interpreter: None,

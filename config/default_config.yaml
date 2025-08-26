@@ -1,11 +1,30 @@
 ---
-# Daemon Configuration for Async RTDE Clients
-# This file configures runtime parameters for background RTDE processes
+# Unified Daemon Configuration
+# This file contains all configuration for the UR daemon
 
 # Robot Configuration
 robot:
-  # Path to robot config file (relative to config directory)
-  config_path: "robot/sim.yaml"
+  # Robot connection parameters
+  host: "localhost"  # Change to robot IP in production
+  ports:
+    primary: 30001      # Primary client interface
+    rtde: 30004         # Real-Time Data Exchange
+    dashboard: 29999    # Dashboard server
+  
+  # Tool center point offset
+  tcp_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  
+  # Movement parameters
+  movement:
+    speed: 0.1          # m/s
+    acceleration: 0.1   # m/s²
+    blend_radius: 0.01  # m
+  
+  # Connection settings
+  connection:
+    timeout: 10.0       # seconds
+    retry_attempts: 3
+    retry_delay: 2.0    # seconds
 
 # Publishing Configuration
 publishing:

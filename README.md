@@ -41,30 +41,20 @@ brew install --cask docker
 # Enter Nix shell with all dependencies
 nix develop
 
-# Build the daemon
-cargo build --release
+# Optional: start sim (not needed if you have a real robot)
+start-sim
 
-# Run with integrated monitoring
-./target/release/urd
+# Initialize robot (only needed if the robot is waking up for the first time)
+ur-init
 
-# Or run from workspace root
-cargo run --bin urd
+# run the daemon
+urd
+
+# alternatively: pipe a urscript into the daemon
+cat paths/path.txt | urd
+
 ```
 
-### Optional: Robot Simulation
-
-If you want to test with a simulated robot:
-
-```bash
-# Start the robot simulator (Docker required)
-./scripts/start-sim.sh
-
-# Initialize robot (may be required on first power-on)
-./scripts/ur-init.sh
-
-# Stop the simulator when done
-./scripts/stop-sim.sh
-```
 
 ## 🏗️ Architecture
 

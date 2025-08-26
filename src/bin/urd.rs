@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
     
     // Initialize robot controller with custom config path
     info!("Starting robot initialization");
-    let mut controller = RobotController::new_with_config(Some(&config_path))
+    let mut controller = RobotController::new_with_config(&config_path)
         .context("Failed to create robot controller")?;
     
     // Get monitoring setting from config
