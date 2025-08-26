@@ -1,0 +1,25 @@
+---
+# Daemon Configuration for Async RTDE Clients
+# This file configures runtime parameters for background RTDE processes
+
+# Robot Configuration
+robot:
+  # Path to robot config file (relative to config directory)
+  config_path: "robot/sim.yaml"
+
+# Publishing Configuration
+publishing:
+  # Rate at which robot position is published/displayed (Hz)
+  pub_rate_hz: 10
+  
+  # Number of decimal places for position/pose values in JSON output
+  decimal_places: 4
+
+# Command Configuration
+command:
+  # Monitor program execution via RTDE
+  monitor_execution: true
+  
+  # Stream robot state output while processing commands
+  # Options: false (disabled), true (continuous), "dynamic" (only on change)
+  stream_robot_state: "dynamic"

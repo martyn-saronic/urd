@@ -1,0 +1,26 @@
+robot:
+  # Robot connection parameters
+  host: 192.168.0.11  # Change to robot IP in production
+  ports:
+    primary: 30001      # Primary client interface
+    secondary: 30002    # Secondary client interface  
+    realtime: 30003     # Real-time client interface
+    rtde: 30004         # Real-Time Data Exchange
+    dashboard: 29999    # Dashboard server
+    interpreter: 30020  # Interpreter mode (may not be available in sim)
+  
+  # Robot configuration
+  model: "UR10e"
+  tcp_offset: [0.0, 0.2, 0.0, 0.0, 0.0, 0.0]  # Tool center point offset
+  
+  # Movement parameters
+  movement:
+    speed: 0.1          # m/s
+    acceleration: 0.1   # m/s²
+    blend_radius: 0.01  # m
+  
+  # Connection settings
+  connection:
+    timeout: 10.0       # seconds
+    retry_attempts: 3
+    retry_delay: 2.0    # seconds

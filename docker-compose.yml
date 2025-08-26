@@ -1,0 +1,27 @@
+services:
+  ursim:
+    image: universalrobots/ursim_e-series
+    container_name: ur10e-sim
+    ports:
+      - "6080:6080"     # VNC web interface
+      - "5900:5900"     # VNC direct connection
+      - "29999:29999"   # Dashboard server
+      - "30001:30001"   # Primary client interface
+      - "30002:30002"   # Secondary client interface  
+      - "30003:30003"   # Real-time client interface
+      - "30004:30004"   # Real-time client interface
+      - "30020:30020"   # Interpreter mode
+      - "30001-30013:30001-30013"  # Full range for external control
+    environment:
+      - ROBOT_MODEL=UR10
+      - URSIM_ROBOT_MODEL=UR10
+    privileged: true
+    restart: unless-stopped
+    volumes:
+      - ${HOME}/.ursim/programs:/ursim/programs
+      - ${HOME}/.ursim/urcaps:/urcaps
+      - ursim_logs:/tmp
+
+volumes:
+  ursim_programs:
+  ursim_logs:

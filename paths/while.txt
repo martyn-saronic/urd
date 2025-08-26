@@ -1,0 +1,19 @@
+ref_point = [-1.587,-1.587,-1.587,0,1.587,-3.1416]
+movej(ref_point, a = 0.1 , v =0.1)
+ref_pose = get_actual_tcp_pose()
+movej(ref_pose, a=0.1, v = 0.1)
+movel(pose_add(ref_pose, p[0,-0.5,-0.5,0,0,0]), a = 0.1, v = 0.1)
+close_pose = get_actual_tcp_pose()
+a = 0.1 
+v=0.1
+start_angle_up = -0.3
+end_angle_up = 0.8
+left_angle = -0.30
+right_angle = 0.30
+step_size = 0.02
+current = start_angle_up
+while (current<=end_angle_up): 
+  movel(pose_add(close_pose, p[0,0,0,current,left_angle,0]),a,v)
+  movel(pose_add(close_pose, p[0,0,0,current,right_angle,0]),a,v)
+  current = current+step_size
+end
