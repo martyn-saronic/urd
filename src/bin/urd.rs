@@ -227,9 +227,6 @@ async fn run_monitoring_loop(
                 }
             }
         }
-        
-        // Small delay to prevent busy loop and allow ~125Hz operation
-        tokio::time::sleep(tokio::time::Duration::from_millis(8)).await;
     }
     
     info!("RTDE monitoring stopped");
