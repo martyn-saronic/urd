@@ -9,8 +9,12 @@ use std::time::{Duration, Instant};
 /// Combined position monitoring data (TCP pose + joint angles)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PositionData {
-    /// Timestamp when the data was captured
-    pub timestamp: f64,
+    /// Robot's internal timestamp (seconds since robot power-on)
+    /// None if robot timestamp is not available
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtime: Option<f64>,
+    /// System timestamp (Unix epoch time when data was received by daemon)
+    pub stime: f64,
     /// Event type for JSON output
     #[serde(rename = "type")]
     pub event_type: String,
@@ -23,8 +27,12 @@ pub struct PositionData {
 /// Robot state monitoring data
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RobotStateData {
-    /// Timestamp when the data was captured
-    pub timestamp: f64,
+    /// Robot's internal timestamp (seconds since robot power-on)
+    /// None if robot timestamp is not available
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtime: Option<f64>,
+    /// System timestamp (Unix epoch time when data was received by daemon)
+    pub stime: f64,
     /// Event type for JSON output
     #[serde(rename = "type")]
     pub event_type: String,
@@ -43,7 +51,7 @@ pub struct RobotStateData {
 }
 
 impl PositionData {
-    pub fn new_rounded(tcp_pose: [f64; 6], joint_positions: [f64; 6], timestamp: f64, decimal_places: u32) -> Self {
+    pub fn new_rounded(tcp_pose: [f64; 6], joint_positions: [f64; 6], rtime: Option<f64>, stime: f64, decimal_places: u32) -> Self {
         // Helper function to round values
         let round_value = |value: f64| -> f64 {
             let multiplier = 10.0_f64.powi(decimal_places as i32);
@@ -69,7 +77,8 @@ impl PositionData {
         ];
         
         Self {
-            timestamp,
+            rtime,
+            stime,
             event_type: "position".to_string(),
             tcp_pose: rounded_tcp_pose,
             joint_positions: rounded_joint_positions,
@@ -86,10 +95,12 @@ impl RobotStateData {
         safety_mode_name: String,
         runtime_state: i32,
         runtime_state_name: String,
-        timestamp: f64,
+        rtime: Option<f64>,
+        stime: f64,
     ) -> Self {
         Self {
-            timestamp,
+            rtime,
+            stime,
             event_type: "robot_state".to_string(),
             robot_mode,
             robot_mode_name,
@@ -203,13 +214,25 @@ impl MonitorOutput {
             .map(|&v| format!("{:.prec$}", v, prec = self.decimal_places as usize))
             .collect();
         
-        let json = format!(
-            r#"{{"timestamp":{:.6},"type":"{}","tcp_pose":[{}],"joint_positions":[{}]}}"#,
-            data.timestamp,
-            data.event_type,
-            tcp_formatted.join(","),
-            joint_formatted.join(",")
-        );
+        // Build JSON with both timestamp fields
+        let json = if let Some(rtime) = data.rtime {
+            format!(
+                r#"{{"rtime":{:.6},"stime":{:.6},"type":"{}","tcp_pose":[{}],"joint_positions":[{}]}}"#,
+                rtime,
+                data.stime,
+                data.event_type,
+                tcp_formatted.join(","),
+                joint_formatted.join(",")
+            )
+        } else {
+            format!(
+                r#"{{"stime":{:.6},"type":"{}","tcp_pose":[{}],"joint_positions":[{}]}}"#,
+                data.stime,
+                data.event_type,
+                tcp_formatted.join(","),
+                joint_formatted.join(",")
+            )
+        };
         
         println!("{}", json);
     }

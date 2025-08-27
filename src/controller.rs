@@ -321,18 +321,28 @@ impl RobotController {
     }
     
     /// Process robot state data and output JSON monitoring
+    /// 
+    /// # Arguments
+    /// * `joint_positions` - Joint angles in radians
+    /// * `tcp_pose` - TCP pose [x, y, z, rx, ry, rz]
+    /// * `robot_mode` - Robot mode from RTDE
+    /// * `safety_mode` - Safety mode from RTDE  
+    /// * `runtime_state` - Runtime state from RTDE
+    /// * `robot_timestamp` - Robot's internal timestamp (rtime, seconds since power-on) - None if not available  
+    /// * `wire_timestamp` - System timestamp when data was received by daemon (stime, Unix epoch)
     pub fn process_monitoring_data(&mut self, 
         joint_positions: [f64; 6], 
         tcp_pose: [f64; 6], 
         robot_mode: i32, 
         safety_mode: i32, 
         runtime_state: i32, 
-        timestamp: f64
+        robot_timestamp: Option<f64>,
+        wire_timestamp: f64
     ) {
         if let Some(monitor_output) = &mut self.monitor_output {
             // Check and output combined position data (TCP + joints)
-            if monitor_output.should_output_position(tcp_pose, joint_positions, timestamp) {
-                let position_data = PositionData::new_rounded(tcp_pose, joint_positions, timestamp, monitor_output.decimal_places);
+            if monitor_output.should_output_position(tcp_pose, joint_positions, wire_timestamp) {
+                let position_data = PositionData::new_rounded(tcp_pose, joint_positions, robot_timestamp, wire_timestamp, monitor_output.decimal_places);
                 monitor_output.output_position(&position_data);
             }
             
@@ -345,7 +355,8 @@ impl RobotController {
                     get_safety_mode_name(safety_mode),
                     runtime_state,
                     get_runtime_state_name(runtime_state),
-                    timestamp,
+                    robot_timestamp,
+                    wire_timestamp,
                 );
                 monitor_output.output_robot_state(&robot_state_data);
             }

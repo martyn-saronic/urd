@@ -63,6 +63,7 @@ impl RTDESubscriber {
         
         // Try enhanced monitoring first (with robot state), fall back to basic if needed
         let enhanced_variables = vec![
+            "timestamp".to_string(),
             "actual_q".to_string(), 
             "actual_TCP_pose".to_string(),
             "robot_mode".to_string(),
@@ -77,7 +78,7 @@ impl RTDESubscriber {
             }
             Err(_) => {
                 tracing::warn!("Enhanced monitoring unavailable, using basic monitoring");
-                let basic_variables = vec!["actual_q".to_string(), "actual_TCP_pose".to_string()];
+                let basic_variables = vec!["timestamp".to_string(), "actual_q".to_string(), "actual_TCP_pose".to_string()];
                 client.setup_output_recipe(basic_variables.clone(), 125.0)?;
                 basic_variables
             }
@@ -109,14 +110,18 @@ impl RTDESubscriber {
             loop {
                 match client_task.read_data_package() {
                     Ok(data) => {
-                        let timestamp = {
-                            let raw_timestamp = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs_f64();
-                            // Round to 6 decimal places for consistent formatting
-                            (raw_timestamp * 1_000_000.0).round() / 1_000_000.0
-                        };
+                        // Use robot's timestamp if available, fallback to system time
+                        let timestamp = data.get("timestamp")
+                            .and_then(|v| v.first())
+                            .copied()
+                            .unwrap_or_else(|| {
+                                let raw_timestamp = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs_f64();
+                                // Round to 6 decimal places for consistent formatting
+                                (raw_timestamp * 1_000_000.0).round() / 1_000_000.0
+                            });
                         
                         let mut state = RobotState {
                             joint_positions: [0.0; 6],

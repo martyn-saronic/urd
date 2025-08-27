@@ -148,6 +148,7 @@ async fn run_monitoring_loop(
     
     // Try enhanced monitoring first, fall back to basic if needed
     let enhanced_variables = vec![
+        "timestamp".to_string(),
         "actual_q".to_string(),
         "actual_TCP_pose".to_string(),
         "robot_mode".to_string(),
@@ -162,6 +163,7 @@ async fn run_monitoring_loop(
         Err(_) => {
             info!("Enhanced monitoring unavailable, using basic monitoring");
             let basic_variables = vec![
+                "timestamp".to_string(),
                 "actual_q".to_string(),
                 "actual_TCP_pose".to_string(),
             ];
@@ -193,7 +195,13 @@ async fn run_monitoring_loop(
                     .copied()
                     .unwrap_or(0.0) as i32;
                 
-                let timestamp = std::time::SystemTime::now()
+                // Extract robot timestamp (rtime = seconds since robot power-on)
+                let robot_timestamp = data.get("timestamp")
+                    .and_then(|v| v.first())
+                    .copied();
+                
+                // Capture system timestamp (stime = Unix epoch when data received)
+                let wire_timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs_f64();
@@ -216,7 +224,8 @@ async fn run_monitoring_loop(
                         robot_mode,
                         safety_mode,
                         runtime_state,
-                        timestamp
+                        robot_timestamp,
+                        wire_timestamp
                     );
                 }
             }
