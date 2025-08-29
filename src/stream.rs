@@ -29,6 +29,7 @@ pub struct CommandInfo {
     pub id: u32,
     pub command: String,
     pub status: CommandStatus,
+    pub termination_id: Option<u32>,  // ID of the time(0) termination token
 }
 
 /// Command streaming processor that reads from stdin and executes commands
@@ -232,7 +233,7 @@ impl CommandStream {
     
     /// Process a single command through the interpreter
     async fn process_command(&mut self, command: String) -> Result<CommandInfo> {
-        // Execute command via interpreter
+        // Execute command and get termination token
         let result = self.with_controller_mut(|controller| {
             controller.interpreter_mut()?
                 .execute_command(&command)
@@ -243,6 +244,7 @@ impl CommandStream {
             id: result.id,
             command: command.clone(),
             status: CommandStatus::Sent,
+            termination_id: None,
         };
         
         // Check if command was rejected
@@ -256,8 +258,20 @@ impl CommandStream {
         // Output JSON for command sent
         json_output::output::command_sent(result.id, &command.trim());
         
+        // Send termination token
+        let termination_result = self.with_controller_mut(|controller| {
+            controller.interpreter_mut()?
+                .execute_command("time(0)")
+                .context("Failed to execute termination token")
+        }).await?;
+        
+        if !termination_result.rejected {
+            command_info.termination_id = Some(termination_result.id);
+        }
+        
         // Wait for command to complete (can be interrupted by Ctrl+C)
-        let completed = self.wait_for_completion(result.id).await?;
+        let wait_id = command_info.termination_id.unwrap_or(result.id);
+        let completed = self.wait_for_completion(wait_id).await?;
         
         if completed {
             command_info.status = CommandStatus::Completed;
