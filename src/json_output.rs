@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Get current timestamp as f64 seconds since UNIX epoch with consistent precision
-fn current_timestamp() -> f64 {
+pub fn current_timestamp() -> f64 {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

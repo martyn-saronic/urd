@@ -346,6 +346,19 @@ All URScript commands are validated before execution:
 - Malformed command filtering
 - Connection state verification
 
+## 🔧 Sentinel Commands
+
+URD provides special @ commands for diagnostics and recovery that don't interfere with robot operations:
+
+```bash
+@status      # Get comprehensive robot status (connection state, RTDE data, modes)
+@health      # Check connection health (interpreter, sockets, monitoring)  
+@reconnect   # Manually reconnect to robot (useful after e-stops, power cycles)
+@help        # List available sentinel commands
+```
+
+These commands provide JSON output for monitoring and bypass the robot interpreter buffer entirely.
+
 ## 🔄 Usage Examples
 
 ### Interactive Command Streaming
