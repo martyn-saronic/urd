@@ -28,3 +28,6 @@ result-*
 
 # Logs
 *.log
+
+# Claude 
+.claude/
