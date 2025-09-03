@@ -132,25 +132,42 @@ impl CommandStream {
                                 continue;
                             }
                             
-                            // Process the command
-                            match self.process_command(command.to_string()).await {
-                                Ok(command_info) => {
-                                    // Check if shutdown was signaled during command processing
-                                    if matches!(command_info.status, CommandStatus::Failed(ref msg) if msg.contains("shutdown signal")) {
-                                        info!("Command processing interrupted by shutdown signal");
-                                        break;
+                            // Check if this is a sentinel command
+                            if command.starts_with('@') {
+                                // Handle sentinel commands (no buffer management needed)
+                                match self.handle_sentinel_command(command).await {
+                                    Ok(command_info) => {
+                                        // Sentinel commands don't need completion JSON output since they handle their own
+                                        if matches!(command_info.status, CommandStatus::Failed(ref msg) if msg.contains("shutdown signal")) {
+                                            info!("Command processing interrupted by shutdown signal");
+                                            break;
+                                        }
                                     }
-                                    
-                                    json_output::output::command_completed(command_info.id);
-                                    
-                                    // Check if we need to clear the buffer
-                                    if self.command_count % CLEAR_BUFFER_LIMIT == 0 {
-                                        self.periodic_clear().await?;
+                                    Err(e) => {
+                                        error!("Sentinel command failed: {}", e);
                                     }
                                 }
-                                Err(e) => {
-                                    error!("Command failed: {}", e);
-                                    // Continue with next command even if one fails
+                            } else {
+                                // Handle URScript commands (with buffer management)
+                                match self.process_command(command.to_string()).await {
+                                    Ok(command_info) => {
+                                        // Check if shutdown was signaled during command processing
+                                        if matches!(command_info.status, CommandStatus::Failed(ref msg) if msg.contains("shutdown signal")) {
+                                            info!("Command processing interrupted by shutdown signal");
+                                            break;
+                                        }
+                                        
+                                        json_output::output::command_completed(command_info.id);
+                                        
+                                        // Check if we need to clear the buffer (only for URScript commands)
+                                        if self.command_count % CLEAR_BUFFER_LIMIT == 0 {
+                                            self.periodic_clear().await?;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Command failed: {}", e);
+                                        // Continue with next command even if one fails
+                                    }
                                 }
                             }
                         }
@@ -376,6 +393,149 @@ impl CommandStream {
                     return Ok(false); // Return false to indicate shutdown
                 }
             }
+        }
+    }
+    
+    /// Handle @-based sentinel commands
+    async fn handle_sentinel_command(&mut self, command: &str) -> Result<CommandInfo> {
+        let parts: Vec<&str> = command[1..].split_whitespace().collect(); // Remove @ and split
+        let cmd = parts.get(0).unwrap_or(&"");
+        
+        match *cmd {
+            "reconnect" => {
+                info!("Executing @reconnect command");
+                
+                // Output JSON notification
+                println!("{{\"timestamp\":{:.6},\"type\":\"sentinel_command\",\"command\":\"reconnect\",\"message\":\"Manual reconnection requested\"}}", 
+                    crate::json_output::current_timestamp());
+                
+                match self.attempt_reconnection().await {
+                    Ok(_) => {
+                        info!("Manual reconnection successful");
+                        println!("{{\"timestamp\":{:.6},\"type\":\"reconnection_success\",\"message\":\"Manual reconnection successful\"}}", 
+                            crate::json_output::current_timestamp());
+                        
+                        Ok(CommandInfo {
+                            id: 0,
+                            command: command.to_string(),
+                            status: CommandStatus::Completed,
+                            termination_id: None,
+                        })
+                    }
+                    Err(e) => {
+                        error!("Manual reconnection failed: {}", e);
+                        crate::json_output::output::error(crate::json_output::ErrorEvent::new(
+                            &format!("Manual reconnection failed: {}", e),
+                            None
+                        ));
+                        
+                        Ok(CommandInfo {
+                            id: 0,
+                            command: command.to_string(),
+                            status: CommandStatus::Failed(format!("Manual reconnection failed: {}", e)),
+                            termination_id: None,
+                        })
+                    }
+                }
+            }
+            "status" => {
+                info!("Executing @status command");
+                
+                let status_info = self.with_controller_mut(|controller| {
+                    let state = controller.state();
+                    let is_ready = controller.is_ready();
+                    let host = &controller.config().robot.host;
+                    let robot_status = controller.get_robot_status();
+                    
+                    Ok(format!(
+                        "{{\"timestamp\":{:.6},\"type\":\"status\",\"robot_state\":\"{:?}\",\"ready\":{},\"host\":\"{}\",\"robot_mode\":{},\"robot_mode_name\":\"{}\",\"safety_mode\":{},\"safety_mode_name\":\"{}\",\"runtime_state\":{},\"runtime_state_name\":\"{}\",\"last_updated\":{:.6}}}",
+                        crate::json_output::current_timestamp(),
+                        state,
+                        is_ready,
+                        host,
+                        robot_status.robot_mode,
+                        robot_status.robot_mode_name,
+                        robot_status.safety_mode,
+                        robot_status.safety_mode_name,
+                        robot_status.runtime_state,
+                        robot_status.runtime_state_name,
+                        robot_status.last_updated
+                    ))
+                }).await.unwrap_or_else(|_| "{{\"error\":\"Failed to get status\"}}".to_string());
+                
+                println!("{}", status_info);
+                
+                Ok(CommandInfo {
+                    id: 0,
+                    command: command.to_string(),
+                    status: CommandStatus::Completed,
+                    termination_id: None,
+                })
+            }
+            "health" => {
+                info!("Executing @health command");
+                
+                let health_info = self.with_controller_mut(|controller| {
+                    let (interpreter_available, primary_connected, dashboard_connected, monitoring_active) = 
+                        controller.get_connection_health();
+                    
+                    Ok(format!(
+                        "{{\"timestamp\":{:.6},\"type\":\"health\",\"interpreter\":{},\"primary_socket\":{},\"dashboard_socket\":{},\"monitoring\":{}}}",
+                        crate::json_output::current_timestamp(),
+                        interpreter_available,
+                        primary_connected, 
+                        dashboard_connected,
+                        monitoring_active
+                    ))
+                }).await.unwrap_or_else(|_| "{{\"error\":\"Failed to get health info\"}}".to_string());
+                
+                println!("{}", health_info);
+                
+                Ok(CommandInfo {
+                    id: 0,
+                    command: command.to_string(),
+                    status: CommandStatus::Completed,
+                    termination_id: None,
+                })
+            }
+            "help" => {
+                info!("Executing @help command");
+                
+                println!("{{\"timestamp\":{:.6},\"type\":\"help\",\"commands\":[\"@reconnect\",\"@status\",\"@health\",\"@help\"],\"message\":\"Available urd sentinel commands\"}}", 
+                    crate::json_output::current_timestamp());
+                
+                Ok(CommandInfo {
+                    id: 0,
+                    command: command.to_string(),
+                    status: CommandStatus::Completed,
+                    termination_id: None,
+                })
+            }
+            _ => {
+                error!("Unknown sentinel command: {}", cmd);
+                println!("{{\"timestamp\":{:.6},\"type\":\"error\",\"message\":\"Unknown sentinel command: {}\",\"available\":[\"@reconnect\",\"@status\",\"@health\",\"@help\"]}}", 
+                    crate::json_output::current_timestamp(), cmd);
+                
+                Ok(CommandInfo {
+                    id: 0,
+                    command: command.to_string(),
+                    status: CommandStatus::Failed(format!("Unknown sentinel command: {}", cmd)),
+                    termination_id: None,
+                })
+            }
+        }
+    }
+    
+    /// Attempt reconnection to the robot
+    async fn attempt_reconnection(&mut self) -> Result<()> {
+        // We need to handle the async reconnection outside the closure
+        if let Some(ref shared) = self.shared_controller {
+            let mut guard = shared.lock().await;
+            guard.reconnect().await
+        } else if let Some(ref mut controller) = self.controller {
+            controller.reconnect().await
+        } else {
+            Err(anyhow::anyhow!("No controller available for reconnection"))
         }
     }
     

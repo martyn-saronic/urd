@@ -14,7 +14,7 @@ use anyhow::{anyhow, Context, Result};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, error};
 
 /// Robot operational states
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +30,32 @@ pub enum RobotState {
 pub const UR_PRIMARY_PORT: u16 = 30001;
 pub const UR_DASHBOARD_PORT: u16 = 29999;
 
+/// Latest robot status from RTDE monitoring
+#[derive(Debug, Clone)]
+pub struct RobotStatus {
+    pub robot_mode: i32,
+    pub robot_mode_name: String,
+    pub safety_mode: i32,
+    pub safety_mode_name: String,
+    pub runtime_state: i32,
+    pub runtime_state_name: String,
+    pub last_updated: f64,
+}
+
+impl Default for RobotStatus {
+    fn default() -> Self {
+        Self {
+            robot_mode: -1,
+            robot_mode_name: "Unknown".to_string(),
+            safety_mode: -1,
+            safety_mode_name: "Unknown".to_string(),
+            runtime_state: -1,
+            runtime_state_name: "Unknown".to_string(),
+            last_updated: 0.0,
+        }
+    }
+}
+
 /// Robot controller that manages the complete initialization and operation sequence
 pub struct RobotController {
     config: Config,
@@ -40,6 +66,7 @@ pub struct RobotController {
     rtde_monitor: Option<RTDEClient>,
     monitor_output: Option<MonitorOutput>,
     state: RobotState,
+    robot_status: RobotStatus,
 }
 
 impl RobotController {
@@ -56,6 +83,7 @@ impl RobotController {
             rtde_monitor: None,
             monitor_output: None,
             state: RobotState::Disconnected,
+            robot_status: RobotStatus::default(),
         })
     }
     
@@ -71,19 +99,10 @@ impl RobotController {
         info!("Initializing UR Robot Controller");
         info!("Robot: {}", self.config.robot.host);
         
-        // Step 1: Connect to primary socket
-        self.connect_primary().await?;
+        // Initialize connections and interpreter
+        self.initialize_connections_and_interpreter().await?;
         
-        // Step 2: Assess and prepare robot state
-        self.assess_and_prepare_robot().await?;
-        
-        // Step 3: Start interpreter mode
-        self.start_interpreter_mode().await?;
-        
-        // Step 4: Validate interpreter mode
-        self.validate_interpreter().await?;
-        
-        // Step 5: Optionally spawn monitor
+        // Optionally spawn monitor
         if enable_monitoring {
             self.spawn_monitor().await?;
         }
@@ -291,6 +310,64 @@ impl RobotController {
         self.daemon_config.interpreter()
     }
     
+    /// Get connection health information
+    pub fn get_connection_health(&self) -> (bool, bool, bool, bool) {
+        (
+            self.interpreter.is_some(),
+            self.primary_socket.is_some(),
+            self.dashboard_socket.is_some(),
+            self.monitor_output.is_some(),
+        )
+    }
+    
+    /// Get the latest robot status from RTDE monitoring
+    pub fn get_robot_status(&self) -> &RobotStatus {
+        &self.robot_status
+    }
+    
+    /// Attempt to reconnect and reinitialize the robot for interpreter mode
+    pub async fn reconnect(&mut self) -> Result<()> {
+        info!("Attempting robot reconnection and reinitialization");
+        
+        // Close existing connections
+        self.primary_socket = None;
+        self.dashboard_socket = None;
+        self.interpreter = None;
+        self.state = RobotState::Disconnected;
+        self.robot_status = RobotStatus::default();
+        
+        // Attempt full reinitialization sequence
+        match self.initialize_connections_and_interpreter().await {
+            Ok(_) => {
+                info!("Robot reconnection successful");
+                self.state = RobotState::Running;
+                Ok(())
+            }
+            Err(e) => {
+                error!("Robot reconnection failed: {}", e);
+                self.state = RobotState::Error(format!("Reconnection failed: {}", e));
+                Err(e)
+            }
+        }
+    }
+    
+    /// Internal method for connection and interpreter initialization
+    async fn initialize_connections_and_interpreter(&mut self) -> Result<()> {
+        // Step 1: Connect to primary socket
+        self.connect_primary().await?;
+        
+        // Step 2: Assess and prepare robot state
+        self.assess_and_prepare_robot().await?;
+        
+        // Step 3: Start interpreter mode
+        self.start_interpreter_mode().await?;
+        
+        // Step 4: Validate interpreter mode
+        self.validate_interpreter().await?;
+        
+        Ok(())
+    }
+
     /// Send immediate abort through primary socket (bypasses interpreter queue)
     /// This should be faster than sending abort through the interpreter
     pub fn emergency_abort(&mut self) -> Result<()> {
@@ -339,6 +416,17 @@ impl RobotController {
         robot_timestamp: Option<f64>,
         wire_timestamp: f64
     ) {
+        // Update stored robot status
+        self.robot_status = RobotStatus {
+            robot_mode,
+            robot_mode_name: get_robot_mode_name(robot_mode),
+            safety_mode,
+            safety_mode_name: get_safety_mode_name(safety_mode),
+            runtime_state,
+            runtime_state_name: get_runtime_state_name(runtime_state),
+            last_updated: wire_timestamp,
+        };
+        
         if let Some(monitor_output) = &mut self.monitor_output {
             // Check and output combined position data (TCP + joints)
             if monitor_output.should_output_position(tcp_pose, joint_positions, wire_timestamp) {
