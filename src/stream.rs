@@ -448,16 +448,13 @@ impl CommandStream {
                     let robot_status = controller.get_robot_status();
                     
                     Ok(format!(
-                        "{{\"timestamp\":{:.6},\"type\":\"status\",\"robot_state\":\"{:?}\",\"ready\":{},\"host\":\"{}\",\"robot_mode\":{},\"robot_mode_name\":\"{}\",\"safety_mode\":{},\"safety_mode_name\":\"{}\",\"runtime_state\":{},\"runtime_state_name\":\"{}\",\"last_updated\":{:.6}}}",
+                        "{{\"timestamp\":{:.6},\"type\":\"status\",\"robot_state\":\"{:?}\",\"ready\":{},\"host\":\"{}\",\"robot_mode_name\":\"{}\",\"safety_mode_name\":\"{}\",\"runtime_state_name\":\"{}\",\"last_updated\":{:.6}}}",
                         crate::json_output::current_timestamp(),
                         state,
                         is_ready,
                         host,
-                        robot_status.robot_mode,
                         robot_status.robot_mode_name,
-                        robot_status.safety_mode,
                         robot_status.safety_mode_name,
-                        robot_status.runtime_state,
                         robot_status.runtime_state_name,
                         robot_status.last_updated
                     ))
