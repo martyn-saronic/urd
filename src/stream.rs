@@ -39,6 +39,8 @@ pub struct CommandStream {
     shutdown_signal: Option<Arc<std::sync::atomic::AtomicBool>>,
     command_count: u32,
     pending_commands: Vec<CommandInfo>,
+    eof_logged: bool,
+    inside_brace_block: bool,
 }
 
 impl CommandStream {
@@ -50,6 +52,8 @@ impl CommandStream {
             shutdown_signal: None,
             command_count: 0,
             pending_commands: Vec::new(),
+            eof_logged: false,
+            inside_brace_block: false,
         }
     }
     
@@ -61,6 +65,8 @@ impl CommandStream {
             shutdown_signal: None,
             command_count: 0,
             pending_commands: Vec::new(),
+            eof_logged: false,
+            inside_brace_block: false,
         }
     }
     
@@ -75,6 +81,8 @@ impl CommandStream {
             shutdown_signal: Some(shutdown_signal),
             command_count: 0,
             pending_commands: Vec::new(),
+            eof_logged: false,
+            inside_brace_block: false,
         }
     }
     
@@ -120,17 +128,32 @@ impl CommandStream {
                 line_result = reader.read_line(&mut buffer) => {
                     match line_result {
                         Ok(0) => {
-                            // EOF reached
-                            info!("End of input reached");
-                            break;
+                            // EOF reached - log once, then continue silently
+                            if !self.eof_logged {
+                                info!("End of input reached, continuing to wait for more commands...");
+                                self.eof_logged = true;
+                            }
+                            
+                            // Small delay to prevent busy waiting
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            
+                            // Clear the buffer and continue
+                            buffer.clear();
+                            continue;
                         }
                         Ok(_) => {
                             let command = buffer.trim();
                             
-                            // Skip empty lines
-                            if command.is_empty() {
+                            // Reset EOF flag since we got actual input
+                            self.eof_logged = false;
+                            
+                            // Skip empty lines and comment lines
+                            if command.is_empty() || command.starts_with('#') {
                                 continue;
                             }
+                            
+                            // Track braces in the command (after filtering comments)
+                            self.update_brace_tracking(command);
                             
                             // Check if this is a sentinel command
                             if command.starts_with('@') {
@@ -159,8 +182,8 @@ impl CommandStream {
                                         
                                         json_output::output::command_completed(command_info.id);
                                         
-                                        // Check if we need to clear the buffer (only for URScript commands)
-                                        if self.command_count % CLEAR_BUFFER_LIMIT == 0 {
+                                        // Check if we need to clear the buffer (only for URScript commands and not inside brace blocks)
+                                        if self.command_count % CLEAR_BUFFER_LIMIT == 0 && !self.inside_brace_block {
                                             self.periodic_clear().await?;
                                         }
                                     }
@@ -495,10 +518,47 @@ impl CommandStream {
                     termination_id: None,
                 })
             }
+            "abort" => {
+                info!("Executing @abort command");
+                
+                // Output JSON notification
+                println!("{{\"timestamp\":{:.6},\"type\":\"sentinel_command\",\"command\":\"abort\",\"message\":\"Manual abort and buffer clear requested\"}}", 
+                    crate::json_output::current_timestamp());
+                
+                // Send emergency abort and clear buffer
+                match self.emergency_abort_and_clear().await {
+                    Ok(_) => {
+                        info!("Manual abort and buffer clear successful");
+                        println!("{{\"timestamp\":{:.6},\"type\":\"abort_success\",\"message\":\"Emergency abort sent and buffer cleared\"}}", 
+                            crate::json_output::current_timestamp());
+                        
+                        Ok(CommandInfo {
+                            id: 0,
+                            command: command.to_string(),
+                            status: CommandStatus::Completed,
+                            termination_id: None,
+                        })
+                    }
+                    Err(e) => {
+                        error!("Manual abort failed: {}", e);
+                        crate::json_output::output::error(crate::json_output::ErrorEvent::new(
+                            &format!("Manual abort failed: {}", e),
+                            None
+                        ));
+                        
+                        Ok(CommandInfo {
+                            id: 0,
+                            command: command.to_string(),
+                            status: CommandStatus::Failed(format!("Manual abort failed: {}", e)),
+                            termination_id: None,
+                        })
+                    }
+                }
+            }
             "help" => {
                 info!("Executing @help command");
                 
-                println!("{{\"timestamp\":{:.6},\"type\":\"help\",\"commands\":[\"@reconnect\",\"@status\",\"@health\",\"@help\"],\"message\":\"Available urd sentinel commands\"}}", 
+                println!("{{\"timestamp\":{:.6},\"type\":\"help\",\"commands\":[\"@reconnect\",\"@status\",\"@health\",\"@abort\",\"@help\"],\"message\":\"Available urd sentinel commands\"}}", 
                     crate::json_output::current_timestamp());
                 
                 Ok(CommandInfo {
@@ -510,7 +570,7 @@ impl CommandStream {
             }
             _ => {
                 error!("Unknown sentinel command: {}", cmd);
-                println!("{{\"timestamp\":{:.6},\"type\":\"error\",\"message\":\"Unknown sentinel command: {}\",\"available\":[\"@reconnect\",\"@status\",\"@health\",\"@help\"]}}", 
+                println!("{{\"timestamp\":{:.6},\"type\":\"error\",\"message\":\"Unknown sentinel command: {}\",\"available\":[\"@reconnect\",\"@status\",\"@health\",\"@abort\",\"@help\"]}}", 
                     crate::json_output::current_timestamp(), cmd);
                 
                 Ok(CommandInfo {
@@ -520,6 +580,48 @@ impl CommandStream {
                     termination_id: None,
                 })
             }
+        }
+    }
+    
+    /// Update brace tracking based on command content
+    /// Handles multiple braces on the same line by processing them in order
+    fn update_brace_tracking(&mut self, command: &str) {
+        let mut position = 0;
+        
+        while position < command.len() {
+            if let Some(open_pos) = command[position..].find('{') {
+                // Found opening brace
+                let actual_pos = position + open_pos;
+                self.inside_brace_block = true;
+                info!("Entering brace block at position {}", actual_pos);
+                
+                // Look for closing brace after this opening brace
+                position = actual_pos + 1;
+                
+                if let Some(close_pos) = command[position..].find('}') {
+                    // Found closing brace on same line
+                    let actual_close_pos = position + close_pos;
+                    self.inside_brace_block = false;
+                    info!("Exiting brace block at position {}", actual_close_pos);
+                    position = actual_close_pos + 1;
+                } else {
+                    // No closing brace on this line, stay inside block
+                    break;
+                }
+            } else if let Some(close_pos) = command[position..].find('}') {
+                // Found closing brace without opening brace (closing a previous block)
+                let actual_pos = position + close_pos;
+                self.inside_brace_block = false;
+                info!("Exiting brace block at position {}", actual_pos);
+                position = actual_pos + 1;
+            } else {
+                // No more braces on this line
+                break;
+            }
+        }
+        
+        if self.inside_brace_block {
+            info!("Inside brace block - auto-clearing disabled");
         }
     }
     
@@ -534,6 +636,37 @@ impl CommandStream {
         } else {
             Err(anyhow::anyhow!("No controller available for reconnection"))
         }
+    }
+    
+    /// Emergency abort and clear interpreter buffer
+    async fn emergency_abort_and_clear(&mut self) -> Result<()> {
+        // First send emergency abort
+        let abort_result = self.with_controller_mut(|controller| {
+            controller.emergency_abort()
+        }).await;
+        
+        if let Err(e) = abort_result {
+            error!("Emergency abort failed: {}", e);
+            
+            // Try fallback interpreter abort
+            let fallback_result = self.with_controller_mut(|controller| {
+                controller.interpreter_mut().and_then(|interpreter| {
+                    interpreter.abort_move()
+                })
+            }).await;
+            
+            if let Ok(abort_id) = fallback_result {
+                info!("Fallback interpreter abort sent (ID: {})", abort_id);
+            }
+        } else {
+            info!("Emergency abort sent successfully");
+        }
+        
+        // Then clear the interpreter buffer
+        info!("Clearing interpreter buffer after abort");
+        self.periodic_clear().await?;
+        
+        Ok(())
     }
     
     /// Periodic buffer clearing to prevent interpreter overflow
