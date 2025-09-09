@@ -39,6 +39,8 @@ pub struct RobotStatus {
     pub safety_mode_name: String,
     pub runtime_state: i32,
     pub runtime_state_name: String,
+    pub tcp_pose: [f64; 6],
+    pub joint_positions: [f64; 6],
     pub last_updated: f64,
 }
 
@@ -51,6 +53,8 @@ impl Default for RobotStatus {
             safety_mode_name: "Unknown".to_string(),
             runtime_state: -1,
             runtime_state_name: "Unknown".to_string(),
+            tcp_pose: [0.0; 6],
+            joint_positions: [0.0; 6],
             last_updated: 0.0,
         }
     }
@@ -424,6 +428,8 @@ impl RobotController {
             safety_mode_name: get_safety_mode_name(safety_mode),
             runtime_state,
             runtime_state_name: get_runtime_state_name(runtime_state),
+            tcp_pose,
+            joint_positions,
             last_updated: wire_timestamp,
         };
         

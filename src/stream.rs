@@ -15,6 +15,50 @@ use std::sync::{Arc, atomic::Ordering};
 /// This prevents "runtime too much behind" errors in interpreter mode
 const CLEAR_BUFFER_LIMIT: u32 = 500;
 
+/// Convert rotation vector (axis-angle) to forward direction vector
+fn rotvec_to_direction_vector(rx: f64, ry: f64, rz: f64) -> [f64; 3] {
+    // Rotation vector magnitude is the rotation angle
+    let angle = (rx * rx + ry * ry + rz * rz).sqrt();
+    
+    if angle < 1e-8 {
+        // No rotation, return default forward direction (+Z)
+        return [0.0, 0.0, 1.0];
+    }
+    
+    // Normalize rotation axis
+    let axis_x = rx / angle;
+    let axis_y = ry / angle;
+    let axis_z = rz / angle;
+    
+    // Rodrigues' rotation formula to create rotation matrix
+    let cos_angle = angle.cos();
+    let sin_angle = angle.sin();
+    let one_minus_cos = 1.0 - cos_angle;
+    
+    // Rotation matrix elements (we only need the third column for forward direction)
+    let r13 = axis_x * axis_z * one_minus_cos - axis_y * sin_angle;
+    let r23 = axis_y * axis_z * one_minus_cos + axis_x * sin_angle;
+    let r33 = cos_angle + axis_z * axis_z * one_minus_cos;
+    
+    [r13, r23, r33]
+}
+
+/// Convert direction vector to azimuth/elevation angles in degrees
+fn direction_to_azimuth_elevation(direction: [f64; 3]) -> (f64, f64) {
+    let [x, y, z] = direction;
+    
+    // Azimuth: angle in XY plane from +X axis (0° = +X, 90° = +Y)
+    let azimuth_rad = y.atan2(x);
+    let azimuth_deg = azimuth_rad.to_degrees();
+    
+    // Elevation: angle from horizontal plane (0° = horizontal, 90° = +Z)
+    let horizontal_distance = (x * x + y * y).sqrt();
+    let elevation_rad = z.atan2(horizontal_distance);
+    let elevation_deg = elevation_rad.to_degrees();
+    
+    (azimuth_deg, elevation_deg)
+}
+
 /// Status of a command execution
 #[derive(Debug, Clone)]
 pub enum CommandStatus {
@@ -555,10 +599,50 @@ impl CommandStream {
                     }
                 }
             }
+            "pose" => {
+                info!("Executing @pose command");
+                
+                let pose_info = self.with_controller_mut(|controller| {
+                    let robot_status = controller.get_robot_status();
+                    let tcp_pose = robot_status.tcp_pose;
+                    
+                    // Extract position and rotation
+                    let [x, y, z, rx, ry, rz] = tcp_pose;
+                    
+                    // Calculate pointing direction and angles
+                    let direction = rotvec_to_direction_vector(rx, ry, rz);
+                    let (azimuth, elevation) = direction_to_azimuth_elevation(direction);
+                    
+                    Ok(format!(
+                        "{{\"timestamp\":{:.6},\"type\":\"pose\",\"position\":{{\"x\":{:.3},\"y\":{:.3},\"z\":{:.3}}},\"rotation_vector\":{{\"rx\":{:.6},\"ry\":{:.6},\"rz\":{:.6}}},\"pointing_direction\":{{\"x\":{:.6},\"y\":{:.6},\"z\":{:.6}}},\"azimuth_deg\":{:.1},\"elevation_deg\":{:.1},\"joint_positions\":[{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}],\"last_updated\":{:.6}}}",
+                        crate::json_output::current_timestamp(),
+                        x, y, z,
+                        rx, ry, rz,
+                        direction[0], direction[1], direction[2],
+                        azimuth, elevation,
+                        robot_status.joint_positions[0],
+                        robot_status.joint_positions[1], 
+                        robot_status.joint_positions[2],
+                        robot_status.joint_positions[3],
+                        robot_status.joint_positions[4],
+                        robot_status.joint_positions[5],
+                        robot_status.last_updated
+                    ))
+                }).await.unwrap_or_else(|_| "{{\"error\":\"Failed to get pose\"}}".to_string());
+                
+                println!("{}", pose_info);
+                
+                Ok(CommandInfo {
+                    id: 0,
+                    command: command.to_string(),
+                    status: CommandStatus::Completed,
+                    termination_id: None,
+                })
+            }
             "help" => {
                 info!("Executing @help command");
                 
-                println!("{{\"timestamp\":{:.6},\"type\":\"help\",\"commands\":[\"@reconnect\",\"@status\",\"@health\",\"@abort\",\"@help\"],\"message\":\"Available urd sentinel commands\"}}", 
+                println!("{{\"timestamp\":{:.6},\"type\":\"help\",\"commands\":[\"@reconnect\",\"@status\",\"@health\",\"@abort\",\"@pose\",\"@help\"],\"message\":\"Available urd sentinel commands\"}}", 
                     crate::json_output::current_timestamp());
                 
                 Ok(CommandInfo {
@@ -570,7 +654,7 @@ impl CommandStream {
             }
             _ => {
                 error!("Unknown sentinel command: {}", cmd);
-                println!("{{\"timestamp\":{:.6},\"type\":\"error\",\"message\":\"Unknown sentinel command: {}\",\"available\":[\"@reconnect\",\"@status\",\"@health\",\"@abort\",\"@help\"]}}", 
+                println!("{{\"timestamp\":{:.6},\"type\":\"error\",\"message\":\"Unknown sentinel command: {}\",\"available\":[\"@reconnect\",\"@status\",\"@health\",\"@abort\",\"@pose\",\"@help\"]}}", 
                     crate::json_output::current_timestamp(), cmd);
                 
                 Ok(CommandInfo {
