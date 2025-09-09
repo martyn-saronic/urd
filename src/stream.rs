@@ -26,37 +26,128 @@ fn rotvec_to_direction_vector(rx: f64, ry: f64, rz: f64) -> [f64; 3] {
     }
     
     // Normalize rotation axis
-    let axis_x = rx / angle;
-    let axis_y = ry / angle;
-    let axis_z = rz / angle;
+    let kx = rx / angle;
+    let ky = ry / angle;
+    let kz = rz / angle;
     
-    // Rodrigues' rotation formula to create rotation matrix
+    // Forward direction in TCP frame is +Z
+    let v = [0.0, 0.0, 1.0];
+    
+    // Rodrigues' rotation formula: v_rot = v*cos(θ) + (k×v)*sin(θ) + k*(k·v)*(1-cos(θ))
     let cos_angle = angle.cos();
     let sin_angle = angle.sin();
     let one_minus_cos = 1.0 - cos_angle;
     
-    // Rotation matrix elements (we only need the third column for forward direction)
-    let r13 = axis_x * axis_z * one_minus_cos - axis_y * sin_angle;
-    let r23 = axis_y * axis_z * one_minus_cos + axis_x * sin_angle;
-    let r33 = cos_angle + axis_z * axis_z * one_minus_cos;
+    // k·v (dot product)
+    let k_dot_v = kx * v[0] + ky * v[1] + kz * v[2]; // = kz since v = [0,0,1]
     
-    [r13, r23, r33]
+    // k×v (cross product)  
+    let cross_x = ky * v[2] - kz * v[1]; // ky*1 - kz*0 = ky
+    let cross_y = kz * v[0] - kx * v[2]; // kz*0 - kx*1 = -kx  
+    let cross_z = kx * v[1] - ky * v[0]; // kx*0 - ky*0 = 0
+    
+    // Apply Rodrigues' formula
+    let result_x = v[0] * cos_angle + cross_x * sin_angle + kx * k_dot_v * one_minus_cos;
+    let result_y = v[1] * cos_angle + cross_y * sin_angle + ky * k_dot_v * one_minus_cos;
+    let result_z = v[2] * cos_angle + cross_z * sin_angle + kz * k_dot_v * one_minus_cos;
+    
+    [result_x, result_y, result_z]
 }
 
 /// Convert direction vector to azimuth/elevation angles in degrees
 fn direction_to_azimuth_elevation(direction: [f64; 3]) -> (f64, f64) {
-    let [x, y, z] = direction;
+    let [dx, dy, dz] = direction;
     
     // Azimuth: angle in XY plane from +X axis (0° = +X, 90° = +Y)
-    let azimuth_rad = y.atan2(x);
+    // This is the compass bearing of where the robot is pointing horizontally
+    let azimuth_rad = dy.atan2(dx);
     let azimuth_deg = azimuth_rad.to_degrees();
     
     // Elevation: angle from horizontal plane (0° = horizontal, 90° = +Z)
-    let horizontal_distance = (x * x + y * y).sqrt();
-    let elevation_rad = z.atan2(horizontal_distance);
+    // This is how much the robot is pointing up (+) or down (-)
+    let horizontal_distance = (dx * dx + dy * dy).sqrt();
+    let elevation_rad = dz.atan2(horizontal_distance);
     let elevation_deg = elevation_rad.to_degrees();
     
     (azimuth_deg, elevation_deg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_pose_azimuth_elevation_calculation() {
+        // Test data from actual robot output
+        // TCP pose: [-0.19005552,-0.91001301,0.91996543,1.41407608,0.51115312,-0.56129826]
+        let rx = 1.41407608;
+        let ry = 0.51115312;
+        let rz = -0.56129826;
+        
+        // Expected pointing direction from Python reference
+        let expected_direction_x = -0.0003620138906880177;
+        let expected_direction_y = -0.995729840111155;
+        let expected_direction_z = 0.09231443255611105;
+        
+        // Expected azimuth/elevation from Python reference  
+        let expected_azimuth = -90.02083081807142;
+        let expected_elevation = 5.296768755647904;
+        
+        // Calculate direction vector from rotation vector
+        let calculated_direction = rotvec_to_direction_vector(rx, ry, rz);
+        
+        // Calculate azimuth/elevation from direction
+        let (calculated_azimuth, calculated_elevation) = direction_to_azimuth_elevation(calculated_direction);
+        
+        // Test direction vector calculation (tolerance for floating point precision)
+        let direction_tolerance = 1e-6;
+        assert!((calculated_direction[0] - expected_direction_x).abs() < direction_tolerance,
+            "Direction X mismatch: calculated={}, expected={}", calculated_direction[0], expected_direction_x);
+        assert!((calculated_direction[1] - expected_direction_y).abs() < direction_tolerance,
+            "Direction Y mismatch: calculated={}, expected={}", calculated_direction[1], expected_direction_y);
+        assert!((calculated_direction[2] - expected_direction_z).abs() < direction_tolerance,
+            "Direction Z mismatch: calculated={}, expected={}", calculated_direction[2], expected_direction_z);
+        
+        // Test azimuth/elevation calculation (tolerance for floating point precision)
+        let angle_tolerance = 0.01; // 0.01 degree tolerance
+        assert!((calculated_azimuth - expected_azimuth).abs() < angle_tolerance,
+            "Azimuth mismatch: calculated={:.6}, expected={:.6}", calculated_azimuth, expected_azimuth);
+        assert!((calculated_elevation - expected_elevation).abs() < angle_tolerance,
+            "Elevation mismatch: calculated={:.6}, expected={:.6}", calculated_elevation, expected_elevation);
+        
+        println!("✓ Direction vector: [{:.12}, {:.12}, {:.12}]", 
+            calculated_direction[0], calculated_direction[1], calculated_direction[2]);
+        println!("✓ Azimuth: {:.6}° (expected: {:.6}°)", calculated_azimuth, expected_azimuth);
+        println!("✓ Elevation: {:.6}° (expected: {:.6}°)", calculated_elevation, expected_elevation);
+    }
+    
+    #[test]
+    fn test_basic_directions() {
+        // Test cardinal directions
+        
+        // Pointing +X (East): azimuth=0°, elevation=0°
+        let direction_east = [1.0, 0.0, 0.0];
+        let (az, el) = direction_to_azimuth_elevation(direction_east);
+        assert!((az - 0.0).abs() < 0.01);
+        assert!((el - 0.0).abs() < 0.01);
+        
+        // Pointing +Y (North): azimuth=90°, elevation=0°
+        let direction_north = [0.0, 1.0, 0.0];
+        let (az, el) = direction_to_azimuth_elevation(direction_north);
+        assert!((az - 90.0).abs() < 0.01);
+        assert!((el - 0.0).abs() < 0.01);
+        
+        // Pointing -Y (South): azimuth=-90°, elevation=0°
+        let direction_south = [0.0, -1.0, 0.0];
+        let (az, el) = direction_to_azimuth_elevation(direction_south);
+        assert!((az - (-90.0)).abs() < 0.01);
+        assert!((el - 0.0).abs() < 0.01);
+        
+        // Pointing +Z (Up): azimuth=undefined, elevation=90°
+        let direction_up = [0.0, 0.0, 1.0];
+        let (_az, el) = direction_to_azimuth_elevation(direction_up);
+        assert!((el - 90.0).abs() < 0.01);
+    }
 }
 
 /// Status of a command execution
