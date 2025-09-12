@@ -1,3 +1,5 @@
+@reconnect
+@clear
 ref_point = [-1.587,-1.587,-1.587,0,1.587,-3.1416]
 movej(ref_point, a = 0.1, v = 0.1)
 ref_pose = get_actual_tcp_pose()

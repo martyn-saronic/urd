@@ -653,18 +653,18 @@ impl CommandStream {
                     termination_id: None,
                 })
             }
-            "abort" => {
-                info!("Executing @abort command");
+            "clear" => {
+                info!("Executing @clear command");
                 
                 // Output JSON notification
-                println!("{{\"timestamp\":{:.6},\"type\":\"sentinel_command\",\"command\":\"abort\",\"message\":\"Manual abort and buffer clear requested\"}}", 
+                println!("{{\"timestamp\":{:.6},\"type\":\"sentinel_command\",\"command\":\"clear\",\"message\":\"Manual buffer clear requested\"}}", 
                     crate::json_output::current_timestamp());
                 
-                // Send emergency abort and clear buffer
-                match self.emergency_abort_and_clear().await {
+                // Clear buffer only (no emergency abort)
+                match self.periodic_clear().await {
                     Ok(_) => {
-                        info!("Manual abort and buffer clear successful");
-                        println!("{{\"timestamp\":{:.6},\"type\":\"abort_success\",\"message\":\"Emergency abort sent and buffer cleared\"}}", 
+                        info!("Manual buffer clear successful");
+                        println!("{{\"timestamp\":{:.6},\"type\":\"clear_success\",\"message\":\"Buffer cleared successfully\"}}", 
                             crate::json_output::current_timestamp());
                         
                         Ok(CommandInfo {
@@ -675,16 +675,16 @@ impl CommandStream {
                         })
                     }
                     Err(e) => {
-                        error!("Manual abort failed: {}", e);
+                        error!("Manual buffer clear failed: {}", e);
                         crate::json_output::output::error(crate::json_output::ErrorEvent::new(
-                            &format!("Manual abort failed: {}", e),
+                            &format!("Manual buffer clear failed: {}", e),
                             None
                         ));
                         
                         Ok(CommandInfo {
                             id: 0,
                             command: command.to_string(),
-                            status: CommandStatus::Failed(format!("Manual abort failed: {}", e)),
+                            status: CommandStatus::Failed(format!("Manual buffer clear failed: {}", e)),
                             termination_id: None,
                         })
                     }
@@ -733,7 +733,7 @@ impl CommandStream {
             "help" => {
                 info!("Executing @help command");
                 
-                println!("{{\"timestamp\":{:.6},\"type\":\"help\",\"commands\":[\"@reconnect\",\"@status\",\"@health\",\"@abort\",\"@pose\",\"@help\"],\"message\":\"Available urd sentinel commands\"}}", 
+                println!("{{\"timestamp\":{:.6},\"type\":\"help\",\"commands\":[\"@reconnect\",\"@status\",\"@health\",\"@clear\",\"@pose\",\"@help\"],\"message\":\"Available urd sentinel commands\"}}", 
                     crate::json_output::current_timestamp());
                 
                 Ok(CommandInfo {
@@ -745,7 +745,7 @@ impl CommandStream {
             }
             _ => {
                 error!("Unknown sentinel command: {}", cmd);
-                println!("{{\"timestamp\":{:.6},\"type\":\"error\",\"message\":\"Unknown sentinel command: {}\",\"available\":[\"@reconnect\",\"@status\",\"@health\",\"@abort\",\"@pose\",\"@help\"]}}", 
+                println!("{{\"timestamp\":{:.6},\"type\":\"error\",\"message\":\"Unknown sentinel command: {}\",\"available\":[\"@reconnect\",\"@status\",\"@health\",\"@clear\",\"@pose\",\"@help\"]}}", 
                     crate::json_output::current_timestamp(), cmd);
                 
                 Ok(CommandInfo {
@@ -813,36 +813,6 @@ impl CommandStream {
         }
     }
     
-    /// Emergency abort and clear interpreter buffer
-    async fn emergency_abort_and_clear(&mut self) -> Result<()> {
-        // First send emergency abort
-        let abort_result = self.with_controller_mut(|controller| {
-            controller.emergency_abort()
-        }).await;
-        
-        if let Err(e) = abort_result {
-            error!("Emergency abort failed: {}", e);
-            
-            // Try fallback interpreter abort
-            let fallback_result = self.with_controller_mut(|controller| {
-                controller.interpreter_mut().and_then(|interpreter| {
-                    interpreter.abort_move()
-                })
-            }).await;
-            
-            if let Ok(abort_id) = fallback_result {
-                info!("Fallback interpreter abort sent (ID: {})", abort_id);
-            }
-        } else {
-            info!("Emergency abort sent successfully");
-        }
-        
-        // Then clear the interpreter buffer
-        info!("Clearing interpreter buffer after abort");
-        self.periodic_clear().await?;
-        
-        Ok(())
-    }
     
     /// Periodic buffer clearing to prevent interpreter overflow
     async fn periodic_clear(&mut self) -> Result<()> {
