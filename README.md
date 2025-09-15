@@ -459,3 +459,140 @@ tracing = "0.1"                     # Structured logging
 tracing-subscriber = "0.3"          # Log formatting
 clap = { features = ["derive"] }    # Command line argument parsing
 ```
+
+## 🚀 Planned: Zenoh Integration
+
+URD is planned to be enhanced with [Zenoh](https://zenoh.io/) middleware to provide a cleaner, more scalable architecture. Zenoh is a high-performance, Rust-native middleware that unifies pub/sub, distributed queries, and computations.
+
+### Why Zenoh?
+
+- **High Performance**: >3.5M msg/s throughput, <35µs latency
+- **Minimal Dependencies**: Pure Rust, no complex infrastructure
+- **Unified Patterns**: Pub/sub, RPC, distributed queries in one system
+- **Portable**: Works in containers, embedded systems, and distributed deployments
+
+### Planned Architecture Improvements
+
+The Zenoh integration will address current limitations and provide new capabilities:
+
+#### Current Limitations:
+- **Mixed JSON Output**: All data (pose, state, commands) goes to stdout
+- **Command Preemption Issues**: Meta commands like `@clear` can't interrupt executing URScript
+- **No Batch Commands**: Each line processed individually, preventing intelligent buffer management
+- **Polling-based Error Handling**: Complex receipt tracking instead of direct request-response
+
+#### Zenoh Solution Architecture:
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Publishers    │    │   Subscribers   │    │   Queryables    │
+│                 │    │                 │    │      (RPC)      │
+│ • urd/robot/pose│    │ • urd/cmd/urscript │ │ • urd/execute/  │
+│ • urd/robot/state│   │ • urd/cmd/meta   │    │   batch         │
+│ • Rate limited  │    │ • Prioritized    │    │ • Multi-line    │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         └───────────────────────┼───────────────────────┘
+                                 │
+                        ┌────────▼────────┐
+                        │  Zenoh Session  │
+                        │                 │
+                        │ • Peer-to-peer  │
+                        │ • No broker req │
+                        │ • Discovery     │
+                        └─────────────────┘
+```
+
+### Three-Phase Implementation Plan
+
+#### Phase 1: Topic-based Publishing (1-2 days)
+Replace stdout JSON with structured Zenoh topics:
+
+```rust
+// Current: Mixed JSON to stdout
+json_output::output::position(&position_data);
+json_output::output::robot_state(&robot_state_data);
+
+// Zenoh: Separate topics
+pose_publisher.put(pose_data).await?;
+state_publisher.put(state_data).await?;
+```
+
+**Benefits:**
+- Consumers subscribe only to needed data types
+- Different publishing rates per topic
+- Multiple consumers without stdout parsing
+- Type-safe structured data
+
+#### Phase 2: Command Stream Separation (3-5 days)
+Solve command preemption with dual subscribers:
+
+```rust
+// Current: Blocking stdin prevents @clear during execution
+line_result = reader.read_line(&mut buffer) => {
+    // Meta commands can't be processed here
+}
+
+// Zenoh: Priority-based command streams
+tokio::select! {
+    meta_cmd = meta_subscriber.recv_async() => {
+        handle_meta_command(meta_cmd).await; // Immediate
+    }
+    ur_cmd = cmd_subscriber.recv_async() => {
+        handle_urscript_command(ur_cmd).await; // Interruptible
+    }
+}
+```
+
+**Benefits:**
+- True preemption: `@clear` can interrupt any running command
+- Separate channels for different command types
+- Non-blocking architecture eliminates stdin bottleneck
+
+#### Phase 3: RPC Pattern for Batch Commands (5-8 days)
+Replace polling with direct request-response:
+
+```rust
+// Current: Fire-and-forget with polling
+json_output::output::command_sent(id, &command);
+let completed = self.wait_for_completion(id).await?; // Polling
+
+// Zenoh: RPC queryables
+let queryable = session.declare_queryable("urd/execute/batch").await?;
+while let Ok(query) = queryable.recv_async().await {
+    let commands: Vec<String> = query.parameters();
+    let result = execute_batch(commands).await?;
+    query.reply(result).await?; // Direct response
+}
+```
+
+**Benefits:**
+- **Batch Commands**: Send multiple URScript lines as one operation
+- **Buffer Control**: Client specifies when NOT to auto-clear during batch
+- **Direct Response**: Immediate success/failure, no polling
+- **Clean API**: Request-response instead of receipt tracking
+
+### Implementation Timeline
+
+```
+Week 1: Phase 1 - Topic Publishing + Testing
+Week 2: Phase 2 - Command Stream Separation  
+Week 3: Phase 3 - RPC Pattern Implementation
+Week 4: Integration Testing + Documentation
+```
+
+### Migration Strategy
+
+- **Backwards Compatibility**: Zenoh features added alongside existing functionality
+- **Feature Flags**: Enable/disable Zenoh components during development
+- **Incremental Rollout**: Each phase adds functionality without breaking existing usage
+- **Single Dependency**: Only adds `zenoh = "1.0.0"` to Cargo.toml
+
+### Expected Benefits
+
+1. **Solves Command Preemption**: Meta commands can truly interrupt URScript execution
+2. **Enables Batch Processing**: Multi-line commands with intelligent buffer management
+3. **Cleaner APIs**: Request-response instead of polling and receipt tracking
+4. **Better Scalability**: Multiple consumers, distributed deployments
+5. **Future-Proof Architecture**: Modern middleware for robot fleet management
+
+The current URD implementation provides a solid foundation - the Zenoh integration will enhance it with modern middleware patterns while preserving all existing functionality and deployment simplicity.
