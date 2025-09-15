@@ -46,3 +46,9 @@ command:
   # Stream robot state output while processing commands
   # Options: false (disabled), true (continuous), "dynamic" (only on change)
   stream_robot_state: "dynamic"
+
+# Zenoh Configuration (optional, only used with zenoh-integration feature)
+zenoh:
+  # Topic prefix for publishing robot data
+  # Actual topics will be: {topic_prefix}/pose and {topic_prefix}/state
+  topic_prefix: "urd/robot"

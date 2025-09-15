@@ -149,8 +149,8 @@ impl MonitorOutput {
     }
 
     /// Create a new monitor output manager with Zenoh publishing
-    pub async fn new_with_zenoh(pub_rate_hz: u32, dynamic_mode: bool, decimal_places: u32) -> anyhow::Result<Self> {
-        let zenoh_publisher = ZenohPublisher::new().await?;
+    pub async fn new_with_zenoh(pub_rate_hz: u32, dynamic_mode: bool, decimal_places: u32, topic_prefix: &str) -> anyhow::Result<Self> {
+        let zenoh_publisher = ZenohPublisher::new(topic_prefix).await?;
         
         Ok(Self {
             last_position: None,

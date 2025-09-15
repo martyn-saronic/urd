@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting Zenoh Publishing Demo");
     
     // Create Zenoh publisher
-    let publisher = ZenohPublisher::new().await?;
+    let publisher = ZenohPublisher::new("urd/robot").await?;
     info!("Zenoh publisher created for topics: {:?}", publisher.get_topics());
     
     // Create mock robot data

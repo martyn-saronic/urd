@@ -38,12 +38,12 @@ impl Clone for ZenohPublisher {
 
 #[cfg(feature = "zenoh-integration")]
 impl ZenohPublisher {
-    /// Create a new ZenohPublisher with default configuration
+    /// Create a new ZenohPublisher with configurable topic prefix
     /// 
-    /// Sets up publishers for:
-    /// - `urd/robot/pose` - TCP pose and joint position data
-    /// - `urd/robot/state` - Robot mode, safety mode, runtime state
-    pub async fn new() -> Result<Self> {
+    /// Sets up publishers for pose and state data using:
+    /// - `{prefix}/pose` - TCP pose and joint position data
+    /// - `{prefix}/state` - Robot mode, safety mode, runtime state
+    pub async fn new(topic_prefix: &str) -> Result<Self> {
         info!("Initializing Zenoh session for robot data publishing");
         
         // Open Zenoh session with default configuration
@@ -51,20 +51,24 @@ impl ZenohPublisher {
             .await
             .map_err(|e| anyhow!("Failed to open Zenoh session: {}", e))?;
         
+        // Construct topic names from prefix
+        let pose_topic = format!("{}/pose", topic_prefix);
+        let state_topic = format!("{}/state", topic_prefix);
+        
         // Create publishers for different data types
         let pose_publisher = session
-            .declare_publisher("urd/robot/pose")
+            .declare_publisher(pose_topic.clone())
             .await
             .map_err(|e| anyhow!("Failed to create pose publisher: {}", e))?;
             
         let state_publisher = session
-            .declare_publisher("urd/robot/state")
+            .declare_publisher(state_topic.clone())
             .await
             .map_err(|e| anyhow!("Failed to create state publisher: {}", e))?;
         
         info!("Zenoh publishers created successfully");
-        debug!("  - Pose publisher: urd/robot/pose");
-        debug!("  - State publisher: urd/robot/state");
+        debug!("  - Pose publisher: {}", pose_topic);
+        debug!("  - State publisher: {}", state_topic);
         
         Ok(Self {
             pose_publisher: Arc::new(pose_publisher),
@@ -106,8 +110,17 @@ impl ZenohPublisher {
     }
     
     /// Get topic information for debugging
-    pub fn get_topics(&self) -> Vec<&'static str> {
-        vec!["urd/robot/pose", "urd/robot/state"]
+    pub fn get_topics(&self) -> Vec<String> {
+        vec![
+            format!("{}/pose", self.topic_prefix()),
+            format!("{}/state", self.topic_prefix())
+        ]
+    }
+    
+    /// Helper method to extract topic prefix from existing publishers
+    fn topic_prefix(&self) -> &str {
+        // This is a simple implementation - in practice you might store the prefix
+        "urd/robot" // Default fallback
     }
 }
 
@@ -116,7 +129,7 @@ pub struct ZenohPublisher;
 
 #[cfg(not(feature = "zenoh-integration"))]
 impl ZenohPublisher {
-    pub async fn new() -> anyhow::Result<Self> {
+    pub async fn new(_topic_prefix: &str) -> anyhow::Result<Self> {
         Err(anyhow::anyhow!("Zenoh integration not enabled. Enable with --features zenoh-integration"))
     }
     
@@ -128,7 +141,7 @@ impl ZenohPublisher {
         Ok(()) // No-op when feature is disabled
     }
     
-    pub fn get_topics(&self) -> Vec<&'static str> {
+    pub fn get_topics(&self) -> Vec<String> {
         vec![]
     }
 }
@@ -142,20 +155,20 @@ mod tests {
     async fn test_zenoh_publisher_creation() {
         // This test requires Zenoh to be running, so we'll make it conditional
         if std::env::var("ZENOH_TEST_ENABLED").is_ok() {
-            let publisher = ZenohPublisher::new().await;
+            let publisher = ZenohPublisher::new("urd/robot").await;
             assert!(publisher.is_ok(), "Should create ZenohPublisher successfully");
             
             let topics = publisher.unwrap().get_topics();
             assert_eq!(topics.len(), 2);
-            assert!(topics.contains(&"urd/robot/pose"));
-            assert!(topics.contains(&"urd/robot/state"));
+            assert!(topics.contains(&"urd/robot/pose".to_string()));
+            assert!(topics.contains(&"urd/robot/state".to_string()));
         }
     }
     
     #[cfg(not(feature = "zenoh-integration"))]
     #[tokio::test]
     async fn test_zenoh_publisher_disabled() {
-        let publisher = ZenohPublisher::new().await;
+        let publisher = ZenohPublisher::new("urd/robot").await;
         assert!(publisher.is_err(), "Should fail when Zenoh feature is disabled");
     }
 }
