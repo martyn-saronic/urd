@@ -460,20 +460,58 @@ tracing-subscriber = "0.3"          # Log formatting
 clap = { features = ["derive"] }    # Command line argument parsing
 ```
 
-## 🚀 Planned: Zenoh Integration
+## 🚀 Zenoh Integration
 
-URD is planned to be enhanced with [Zenoh](https://zenoh.io/) middleware to provide a cleaner, more scalable architecture. Zenoh is a high-performance, Rust-native middleware that unifies pub/sub, distributed queries, and computations.
+URD now includes optional [Zenoh](https://zenoh.io/) middleware support for structured data publishing alongside traditional JSON output. Zenoh is a high-performance, Rust-native middleware that provides pub/sub capabilities with minimal overhead.
 
-### Why Zenoh?
+### Quick Start with Zenoh
 
-- **High Performance**: >3.5M msg/s throughput, <35µs latency
-- **Minimal Dependencies**: Pure Rust, no complex infrastructure
-- **Unified Patterns**: Pub/sub, RPC, distributed queries in one system
-- **Portable**: Works in containers, embedded systems, and distributed deployments
+```bash
+# Enter Nix development shell
+nix develop
 
-### Planned Architecture Improvements
+# Terminal 1: Start URD with Zenoh publishing
+urd-z
 
-The Zenoh integration will address current limitations and provide new capabilities:
+# Terminal 2: Subscribe to robot data
+urd-zsub          # Both pose and state data
+urd-zsub pose     # Position data only  
+urd-zsub state    # Robot state only
+```
+
+URD publishes structured data to two Zenoh topics:
+- **`urd/robot/pose`** - TCP pose and joint positions at configurable rate
+- **`urd/robot/state`** - Robot mode, safety mode, runtime state (on change only)
+
+### Zenoh vs JSON Output
+
+**Zenoh Benefits:**
+- Multiple consumers can subscribe independently  
+- Type-safe structured data (no JSON parsing needed)
+- Different consumers can subscribe to different data types
+- Better performance for high-frequency data
+
+**Backwards Compatibility:**
+- JSON output to stdout continues unchanged
+- Zenoh is completely optional (feature flag)
+- All existing tooling continues to work
+
+### Building with Zenoh
+
+```bash
+# Build URD with Zenoh support
+cargo build --features zenoh-integration
+
+# Or run directly
+cargo run --bin urd --features zenoh-integration
+
+# Build subscriber example
+cargo run --bin zenoh_subscriber --features zenoh-integration
+```
+
+### Future Zenoh Enhancements
+
+Phase 1 (Topic-based Publishing) is now complete. Future phases will address:
 
 #### Current Limitations:
 - **Mixed JSON Output**: All data (pose, state, commands) goes to stdout
