@@ -15,6 +15,24 @@ serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 clap = { version = "4.0", features = ["derive"] }
+zenoh = { version = "=1.4", features = ["stats", "unstable"], optional = true }
+# Additional dependencies for zenoh integration (following libio pattern)
+async-trait = { version = "0.1", optional = true }
+crossbeam = { version = "0.8", features = ["crossbeam-channel"], optional = true }
+futures = { version = "0.3", optional = true }
+serde_cbor = { version = "0.11", optional = true }
+uhlc = { version = "0.8", optional = true }
+
+[features]
+default = []
+zenoh-integration = [
+    "dep:zenoh",
+    "dep:async-trait",
+    "dep:crossbeam", 
+    "dep:futures",
+    "dep:serde_cbor",
+    "dep:uhlc"
+]
 
 [lib]
 name = "urd"
@@ -23,3 +41,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "urd"
 path = "src/bin/urd.rs"
+
+[[bin]]
+name = "zenoh_demo"
+path = "src/bin/zenoh_demo.rs"
+
+[[bin]]
+name = "zenoh_subscriber"
+path = "src/bin/zenoh_subscriber.rs"

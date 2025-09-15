@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
+use crate::zenoh_publisher::ZenohPublisher;
 
 /// Combined position monitoring data (TCP pose + joint angles)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -128,6 +129,8 @@ pub struct MonitorOutput {
     dynamic_mode: bool,
     /// Number of decimal places for rounding
     pub decimal_places: u32,
+    /// Optional Zenoh publisher for structured data
+    zenoh_publisher: Option<ZenohPublisher>,
 }
 
 impl MonitorOutput {
@@ -141,7 +144,24 @@ impl MonitorOutput {
             position_threshold: 0.001, // 1mm or 0.001 radians
             dynamic_mode,
             decimal_places,
+            zenoh_publisher: None,
         }
+    }
+
+    /// Create a new monitor output manager with Zenoh publishing
+    pub async fn new_with_zenoh(pub_rate_hz: u32, dynamic_mode: bool, decimal_places: u32, topic_prefix: &str) -> anyhow::Result<Self> {
+        let zenoh_publisher = ZenohPublisher::new(topic_prefix).await?;
+        
+        Ok(Self {
+            last_position: None,
+            last_robot_state: None,
+            last_position_output: None,
+            pub_rate_hz,
+            position_threshold: 0.001, // 1mm or 0.001 radians
+            dynamic_mode,
+            decimal_places,
+            zenoh_publisher: Some(zenoh_publisher),
+        })
     }
     
     /// Check if combined position (TCP + joints) should be output
@@ -235,13 +255,66 @@ impl MonitorOutput {
         };
         
         println!("{}", json);
+        
+        // Also publish to Zenoh if available (spawned to keep method sync)
+        #[cfg(feature = "zenoh-integration")]
+        if let Some(ref zenoh_publisher) = self.zenoh_publisher {
+            let publisher = zenoh_publisher.clone();
+            let data_clone = data.clone();
+            tokio::spawn(async move {
+                if let Err(e) = publisher.publish_pose(&data_clone).await {
+                    // Log error but don't fail the whole operation
+                    tracing::debug!("Failed to publish pose to Zenoh: {}", e);
+                }
+            });
+        }
+    }
+    
+    /// Output combined position with Zenoh publishing (async version)
+    pub async fn output_position_with_zenoh(&self, data: &PositionData) -> anyhow::Result<()> {
+        // First do the regular JSON output
+        self.output_position(data);
+        
+        // Then publish to Zenoh if available
+        if let Some(ref zenoh_publisher) = self.zenoh_publisher {
+            zenoh_publisher.publish_pose(data).await?;
+        }
+        
+        Ok(())
     }
     
     /// Output robot state as JSON
+    /// Automatically publishes to Zenoh if available
     pub fn output_robot_state(&self, data: &RobotStateData) {
         if let Ok(json) = serde_json::to_string(data) {
             println!("{}", json);
         }
+        
+        // Also publish to Zenoh if available (spawned to keep method sync)
+        #[cfg(feature = "zenoh-integration")]
+        if let Some(ref zenoh_publisher) = self.zenoh_publisher {
+            let publisher = zenoh_publisher.clone();
+            let data_clone = data.clone();
+            tokio::spawn(async move {
+                if let Err(e) = publisher.publish_state(&data_clone).await {
+                    // Log error but don't fail the whole operation
+                    tracing::debug!("Failed to publish state to Zenoh: {}", e);
+                }
+            });
+        }
+    }
+    
+    /// Output robot state with Zenoh publishing (async version)
+    pub async fn output_robot_state_with_zenoh(&self, data: &RobotStateData) -> anyhow::Result<()> {
+        // First do the regular JSON output
+        self.output_robot_state(data);
+        
+        // Then publish to Zenoh if available
+        if let Some(ref zenoh_publisher) = self.zenoh_publisher {
+            zenoh_publisher.publish_state(data).await?;
+        }
+        
+        Ok(())
     }
 }
 

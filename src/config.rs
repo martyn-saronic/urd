@@ -47,6 +47,14 @@ pub struct DaemonConfig {
     pub publishing: PublishingConfig,
     pub command: CommandConfig,
     pub interpreter: Option<InterpreterConfig>,
+    #[cfg(feature = "zenoh-integration")]
+    pub zenoh: Option<ZenohConfig>,
+}
+
+#[cfg(feature = "zenoh-integration")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ZenohConfig {
+    pub topic_prefix: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

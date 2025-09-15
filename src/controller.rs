@@ -229,14 +229,41 @@ impl RobotController {
         let rtde_client = RTDEClient::new(&self.config.robot.host, 30004)?;
         self.rtde_monitor = Some(rtde_client);
         
-        // Initialize JSON monitor output
+        // Initialize JSON monitor output (with optional Zenoh)
         let pub_rate_hz = self.daemon_config.publishing.pub_rate_hz;
         let dynamic_mode = self.daemon_config.command.stream_robot_state == "dynamic";
         let decimal_places = self.daemon_config.publishing.decimal_places.unwrap_or(4);
         
-        self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
+        #[cfg(feature = "zenoh-integration")]
+        {
+            // Try to create MonitorOutput with Zenoh
+            if let Some(zenoh_config) = &self.daemon_config.zenoh {
+                match MonitorOutput::new_with_zenoh(pub_rate_hz, dynamic_mode, decimal_places, &zenoh_config.topic_prefix).await {
+                    Ok(monitor) => {
+                        self.monitor_output = Some(monitor);
+                        info!("RTDE monitoring started with JSON output + Zenoh publishing");
+                        info!("  - Topic prefix: {}", zenoh_config.topic_prefix);
+                        info!("  - Pose topic: {}/pose", zenoh_config.topic_prefix);
+                        info!("  - State topic: {}/state", zenoh_config.topic_prefix);
+                    }
+                    Err(e) => {
+                        info!("Zenoh initialization failed, falling back to JSON only: {}", e);
+                        self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
+                        info!("RTDE monitoring started with JSON output only");
+                    }
+                }
+            } else {
+                info!("Zenoh configuration not found in daemon config, using JSON output only");
+                self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
+                info!("RTDE monitoring started with JSON output only");
+            }
+        }
         
-        info!("RTDE monitoring started with JSON output");
+        #[cfg(not(feature = "zenoh-integration"))]
+        {
+            self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
+            info!("RTDE monitoring started with JSON output");
+        }
         info!("Publication rate: {}Hz, Dynamic mode: {}", pub_rate_hz, dynamic_mode);
         Ok(())
     }

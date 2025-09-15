@@ -11,6 +11,7 @@ pub mod json_output;
 pub mod monitoring;
 pub mod rtde;
 pub mod stream;
+pub mod zenoh_publisher;
 
 pub use config::{Config, DaemonConfig, InterpreterConfig};
 pub use controller::{RobotController, RobotState as ControllerRobotState};
@@ -20,6 +21,7 @@ pub use json_output::{CommandStatusEvent, ErrorEvent, BufferEvent, CommandStatus
 pub use monitoring::{MonitorOutput, PositionData, RobotStateData};
 pub use rtde::{RTDEClient, RTDEMessage, RobotState, RTDESubscriber};
 pub use stream::{CommandStream, CommandStats};
+pub use zenoh_publisher::ZenohPublisher;
 
 /// High-level robot control interface
 pub struct ControlInterface {

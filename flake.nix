@@ -37,6 +37,8 @@
             echo "  stop-sim       - Stop UR10e simulator"
             echo "  ur-init        - Power on and initialize UR robot"
             echo "  urd            - Universal Robots daemon - command interpreter (Rust)"
+            echo "  urd-z          - URD with Zenoh integration"
+            echo "  urd-zsub       - Zenoh subscriber (usage: urd-zsub [pose|state] or no args for both)"
             echo "  cargo build    - Build Rust workspace"
             echo ""
             
@@ -57,6 +59,22 @@
                 "$REPO_ROOT/target/release/urd" "$@"
               else
                 (cd "$REPO_ROOT" && cargo build --release --bin urd && "$REPO_ROOT/target/release/urd" "$@")
+              fi
+            }
+            
+            # URD with Zenoh integration
+            urd-z() {
+              (cd "$REPO_ROOT" && cargo run --bin urd --features zenoh-integration -- "$@")
+            }
+            
+            # Zenoh subscriber with topic filtering
+            urd-zsub() {
+              if [ $# -eq 0 ]; then
+                # No arguments - subscribe to both topics
+                (cd "$REPO_ROOT" && cargo run --bin zenoh_subscriber --features zenoh-integration)
+              else
+                # Topic specified - use it
+                (cd "$REPO_ROOT" && cargo run --bin zenoh_subscriber --features zenoh-integration -- --topics="$1")
               fi
             }
           '';
