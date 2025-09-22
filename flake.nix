@@ -39,6 +39,7 @@
             echo "  urd            - Universal Robots daemon - command interpreter (Rust)"
             echo "  urd-z          - URD with Zenoh integration"
             echo "  urd-zsub       - Zenoh subscriber (usage: urd-zsub [pose|state] or no args for both)"
+            echo "  urd-command    - General command client (usage: urd-command <SUBCOMMAND> [OPTIONS])"
             echo "  cargo build    - Build Rust workspace"
             echo ""
             
@@ -64,7 +65,7 @@
             
             # URD with Zenoh integration
             urd-z() {
-              (cd "$REPO_ROOT" && cargo run --bin urd --features zenoh-integration -- "$@")
+              (cd "$REPO_ROOT" && cargo run --bin urd --features zenoh-integration -- --enable-rpc "$@")
             }
             
             # Zenoh subscriber with topic filtering
@@ -75,6 +76,17 @@
               else
                 # Topic specified - use it
                 (cd "$REPO_ROOT" && cargo run --bin zenoh_subscriber --features zenoh-integration -- --topics="$1")
+              fi
+            }
+            
+            # General command client
+            urd-command() {
+              if [ -f "$REPO_ROOT/target/release/urd_command" ]; then
+                "$REPO_ROOT/target/release/urd_command" "$@"
+              elif [ -f "$REPO_ROOT/target/debug/urd_command" ]; then
+                "$REPO_ROOT/target/debug/urd_command" "$@"
+              else
+                (cd "$REPO_ROOT" && cargo build --release --bin urd_command --features zenoh-integration && "$REPO_ROOT/target/release/urd_command" "$@")
               fi
             }
           '';

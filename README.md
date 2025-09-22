@@ -634,3 +634,127 @@ Week 4: Integration Testing + Documentation
 5. **Future-Proof Architecture**: Modern middleware for robot fleet management
 
 The current URD implementation provides a solid foundation - the Zenoh integration will enhance it with modern middleware patterns while preserving all existing functionality and deployment simplicity.
+
+## 🎯 RPC Service
+
+URD now includes a Zenoh-based RPC service for programmatic robot control. The RPC service enables remote command execution with request-response semantics, complementing the existing stdin command interface.
+
+### Quick Start with RPC
+
+```bash
+# Terminal 1: Start URD with RPC service enabled
+urd-z  # Automatically includes --enable-rpc
+
+# Terminal 2: Send emergency abort command
+urd-abort -v -t 3
+```
+
+### Available RPC Commands
+
+#### Emergency Abort
+
+Send immediate emergency abort to halt all robot motion:
+
+```bash
+# Basic abort (5 second timeout)
+urd-abort
+
+# Abort with custom timeout (1-10 seconds)
+urd-abort --timeout 3
+
+# Verbose output with timing information
+urd-abort --verbose --timing
+
+# JSON output for programmatic use
+urd-abort --format json
+
+# Compact output for scripts
+urd-abort --format compact
+```
+
+**Command Format:**
+- **Topic**: `urd/command`
+- **Request**: `{"command_type": "abort", "timeout_secs": 5, "parameters": null}`
+- **Response**: `{"command_type": "abort", "success": true, "message": "...", "duration_ms": 147, "data": {...}}`
+
+### RPC vs. stdin Interface
+
+**RPC Service Benefits:**
+- **Non-blocking**: Multiple clients can send commands concurrently
+- **Request-response**: Immediate success/failure feedback without polling
+- **Typed commands**: Structured JSON payloads with validation
+- **Remote access**: Network-accessible for distributed systems
+- **Programmatic**: Easy integration with other services and languages
+
+**stdin Interface Benefits:**
+- **Interactive**: Real-time command input during development
+- **Simple**: Direct URScript command entry
+- **Familiar**: Standard Unix pipeline pattern
+- **Immediate**: No network overhead for local development
+
+**Both interfaces work simultaneously** - you can use stdin for interactive development and RPC for automated control.
+
+### RPC Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   RPC Clients   │    │   urd/command   │    │  RPC Handlers   │
+│                 │    │     (Topic)     │    │                 │
+│ • urd-abort     │───▶│ • Query/Reply   │───▶│ • abort         │
+│ • Custom tools  │    │ • Blocking      │    │ • execute*      │
+│ • Other langs   │    │ • Validated     │    │ • status*       │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+*Future commands planned for Phase 3.2
+
+### Integration Examples
+
+**Shell Scripts:**
+```bash
+#!/bin/bash
+# Robot safety script
+if ! urd-abort --timeout 2; then
+    echo "Emergency abort failed!"
+    exit 1
+fi
+echo "Robot safely stopped"
+```
+
+**Python Integration:**
+```python
+import subprocess
+import json
+
+def emergency_stop():
+    result = subprocess.run(['urd-abort', '--format', 'json'], 
+                          capture_output=True, text=True)
+    if result.returncode == 0:
+        response = json.loads(result.stdout)
+        return response['success']
+    return False
+```
+
+**From Other Languages:**
+Any language can send Zenoh queries to `urd/command` topic with appropriate JSON payloads.
+
+### Error Handling
+
+The `urd-abort` command provides comprehensive error handling:
+
+- **Exit Code 0**: Abort successful
+- **Exit Code 1**: Abort failed (robot-level failure)  
+- **Exit Code 2**: Invalid response from RPC service
+- **Exit Code 3**: Network/communication failure
+- **Exit Code 4**: No response from RPC service (URD not running)
+
+### Future RPC Commands (Phase 3.2)
+
+The RPC architecture supports extensible command types:
+
+- **`execute`**: Batch URScript execution with intelligent buffering
+- **`status`**: Comprehensive robot status queries  
+- **`pause`/`resume`**: Program flow control
+- **`clear`**: Buffer management commands
+
+All follow the same `urd/command` topic pattern with typed request/response payloads.

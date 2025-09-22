@@ -12,6 +12,9 @@ use tracing::{info, error};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use clap::Parser;
 
+#[cfg(feature = "zenoh-integration")]
+use urd::RpcService;
+
 #[derive(Parser)]
 #[command(name = "urd")]
 #[command(about = "Universal Robots Daemon - Command interpreter with real-time monitoring")]
@@ -20,6 +23,11 @@ struct Args {
     /// Path to the daemon configuration file
     #[arg(short, long)]
     config: Option<String>,
+
+    /// Enable RPC service (requires zenoh-integration feature)
+    #[cfg(feature = "zenoh-integration")]
+    #[arg(long)]
+    enable_rpc: bool,
 }
 
 impl Args {
@@ -76,6 +84,29 @@ async fn main() -> Result<()> {
     // Create shared controller for monitoring and command stream
     let controller = Arc::new(tokio::sync::Mutex::new(controller));
     let shutdown_signal = Arc::new(AtomicBool::new(false));
+
+    // Initialize RPC service if enabled
+    #[cfg(feature = "zenoh-integration")]
+    let _rpc_handle = if args.enable_rpc {
+        info!("Starting Zenoh RPC service");
+        let mut rpc_service = RpcService::new(Arc::clone(&controller)).await
+            .context("Failed to create RPC service")?;
+        
+        rpc_service.start_command_service().await
+            .context("Failed to start RPC command service")?;
+            
+        let stats = rpc_service.get_stats();
+        info!("RPC service active - supported commands: {:?}", stats.supported_commands);
+        
+        Some(tokio::spawn(async move {
+            // Keep RPC service alive until shutdown
+            tokio::signal::ctrl_c().await.ok();
+            info!("Shutting down RPC service");
+            let _ = rpc_service.shutdown().await;
+        }))
+    } else {
+        None
+    };
     
     // Spawn monitoring task if monitoring is enabled
     let monitoring_handle = if enable_monitoring {
