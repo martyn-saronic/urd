@@ -182,6 +182,7 @@ pub struct CommandStream {
 impl CommandStream {
     /// Create a new command stream with an initialized robot controller
     pub fn new(controller: RobotController) -> Self {
+        let clear_signal = controller.get_clear_pending_commands_signal();
         Self {
             controller: Some(controller),
             shared_controller: None,
@@ -190,11 +191,14 @@ impl CommandStream {
             pending_commands: Vec::new(),
             eof_logged: false,
             inside_brace_block: false,
+            clear_pending_commands_signal: Some(clear_signal),
         }
     }
     
     /// Create a new command stream with a shared robot controller
     pub fn new_with_controller(controller: Arc<tokio::sync::Mutex<RobotController>>) -> Self {
+        // We need to get the clear signal from the controller, but it's behind a mutex
+        // We'll get it asynchronously in the run method
         Self {
             controller: None,
             shared_controller: Some(controller),
@@ -203,6 +207,7 @@ impl CommandStream {
             pending_commands: Vec::new(),
             eof_logged: false,
             inside_brace_block: false,
+            clear_pending_commands_signal: None, // Will be set in run method
         }
     }
     
@@ -211,6 +216,8 @@ impl CommandStream {
         controller: Arc<tokio::sync::Mutex<RobotController>>, 
         shutdown_signal: Arc<std::sync::atomic::AtomicBool>
     ) -> Self {
+        // We need to get the clear signal from the controller, but it's behind a mutex
+        // We'll get it asynchronously in the run method
         Self {
             controller: None,
             shared_controller: Some(controller),
@@ -219,6 +226,7 @@ impl CommandStream {
             pending_commands: Vec::new(),
             eof_logged: false,
             inside_brace_block: false,
+            clear_pending_commands_signal: None, // Will be set in run method
         }
     }
     
@@ -247,6 +255,15 @@ impl CommandStream {
         info!("Commands will be executed sequentially with completion tracking");
         info!("Use Ctrl+C to abort immediately");
         
+        // Get the clear pending commands signal if we don't have it yet
+        if self.clear_pending_commands_signal.is_none() {
+            if let Some(ref shared) = self.shared_controller {
+                let guard = shared.lock().await;
+                self.clear_pending_commands_signal = Some(guard.get_clear_pending_commands_signal());
+                drop(guard);
+            }
+        }
+        
         // Set up async stdin reader
         let stdin = io::stdin();
         let mut reader = BufReader::new(stdin);
@@ -260,6 +277,36 @@ impl CommandStream {
             buffer.clear();
             
             tokio::select! {
+                // Monitor clear pending commands signal with higher priority
+                _ = async {
+                    if let Some(ref clear_signal) = self.clear_pending_commands_signal {
+                        while !clear_signal.load(Ordering::Relaxed) {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    } else {
+                        // If no signal, sleep indefinitely
+                        std::future::pending::<()>().await;
+                    }
+                }, if self.clear_pending_commands_signal.is_some() => {
+                    // Clear signal was triggered
+                    if let Some(ref clear_signal) = self.clear_pending_commands_signal {
+                        info!("Clear pending commands signal received - clearing {} pending commands", self.pending_commands.len());
+                        
+                        // Clear the pending commands buffer
+                        self.pending_commands.clear();
+                        
+                        // Reset the signal through the controller
+                        if let Some(ref shared) = self.shared_controller {
+                            let guard = shared.lock().await;
+                            guard.reset_clear_pending_commands_signal();
+                            drop(guard);
+                        } else if let Some(ref controller) = self.controller {
+                            controller.reset_clear_pending_commands_signal();
+                        }
+                        
+                        info!("Pending commands buffer cleared successfully");
+                    }
+                },
                 // Try to read a line from stdin
                 line_result = reader.read_line(&mut buffer) => {
                     match line_result {

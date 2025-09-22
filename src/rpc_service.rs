@@ -526,6 +526,7 @@ impl RpcService {
                 let mut guard = controller.lock().await;
                 
                 // Signal stream processor to clear its pending commands buffer
+                info!("RPC clear: Signaling stream processor to clear pending commands");
                 guard.signal_clear_pending_commands();
                 
                 // Also clear the robot interpreter buffer 
