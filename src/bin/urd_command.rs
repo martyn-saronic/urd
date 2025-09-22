@@ -47,9 +47,9 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Send emergency abort command to halt all robot motion
-    Abort {
-        /// Timeout in seconds for abort completion (1-10, default: 5)
+    /// Send halt command to stop all robot motion immediately
+    Halt {
+        /// Timeout in seconds for halt completion (1-10, default: 5)
         #[arg(short, long, default_value = "5")]
         timeout: u32,
     },
@@ -61,6 +61,8 @@ enum Commands {
     Status,
     /// Check robot connection health
     Health,
+    /// Reconnect and reinitialize robot connections
+    Reconnect,
 }
 
 #[cfg(feature = "zenoh-integration")]
@@ -85,8 +87,8 @@ async fn main() -> Result<()> {
 
     // Handle the specific command
     match args.command {
-        Commands::Abort { timeout } => {
-            execute_abort_command(&args, timeout).await
+        Commands::Halt { timeout } => {
+            execute_halt_command(&args, timeout).await
         }
         Commands::Pose => {
             execute_pose_command(&args).await
@@ -100,11 +102,14 @@ async fn main() -> Result<()> {
         Commands::Health => {
             execute_health_command(&args).await
         }
+        Commands::Reconnect => {
+            execute_reconnect_command(&args).await
+        }
     }
 }
 
 #[cfg(feature = "zenoh-integration")]
-async fn execute_abort_command(args: &Args, timeout: u32) -> Result<()> {
+async fn execute_halt_command(args: &Args, timeout: u32) -> Result<()> {
     // Validate timeout
     let timeout_secs = timeout.clamp(1, 10);
     if timeout != timeout_secs && args.verbose {
@@ -128,9 +133,9 @@ async fn execute_abort_command(args: &Args, timeout: u32) -> Result<()> {
         info!("Connected to Zenoh network");
     }
 
-    // Create command request for abort
+    // Create command request for halt
     let request = CommandRequest {
-        command_type: "abort".to_string(),
+        command_type: "halt".to_string(),
         timeout_secs: Some(timeout_secs),
         parameters: None,
     };
@@ -138,7 +143,7 @@ async fn execute_abort_command(args: &Args, timeout: u32) -> Result<()> {
     let request_json = serde_json::to_string(&request)?;
     
     if args.verbose {
-        info!("Sending abort request: {}", request_json);
+        info!("Sending halt request: {}", request_json);
     }
 
     let start_time = Instant::now();
@@ -153,7 +158,7 @@ async fn execute_abort_command(args: &Args, timeout: u32) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to send command query: {}", e))?;
 
     if args.verbose {
-        info!("Abort query sent, waiting for response...");
+        info!("Halt query sent, waiting for response...");
     }
 
     // Process the first reply
@@ -177,13 +182,13 @@ async fn execute_abort_command(args: &Args, timeout: u32) -> Result<()> {
                             },
                             _ => { // "text" or default
                                 if command_response.success {
-                                    println!("✓ Abort successful: {}", command_response.message);
+                                    println!("✓ Halt successful: {}", command_response.message);
                                 } else {
-                                    eprintln!("✗ Abort failed: {}", command_response.message);
+                                    eprintln!("✗ Halt failed: {}", command_response.message);
                                 }
                                 
                                 if args.timing {
-                                    println!("Timing: Robot abort took {}ms, total RPC took {}ms", 
+                                    println!("Timing: Robot halt took {}ms, total RPC took {}ms", 
                                         command_response.duration_ms, total_elapsed.as_millis());
                                 }
                                 
@@ -211,8 +216,8 @@ async fn execute_abort_command(args: &Args, timeout: u32) -> Result<()> {
                 }
             }
             Err(e) => {
-                error!("Abort query failed: {:?}", e);
-                eprintln!("✗ Abort query failed: {:?}", e);
+                error!("Halt query failed: {:?}", e);
+                eprintln!("✗ Halt query failed: {:?}", e);
                 std::process::exit(3);
             }
         }
@@ -242,6 +247,11 @@ async fn execute_status_command(args: &Args) -> Result<()> {
 #[cfg(feature = "zenoh-integration")]
 async fn execute_health_command(args: &Args) -> Result<()> {
     execute_metacommand(args, "health").await
+}
+
+#[cfg(feature = "zenoh-integration")]
+async fn execute_reconnect_command(args: &Args) -> Result<()> {
+    execute_metacommand(args, "reconnect").await
 }
 
 #[cfg(feature = "zenoh-integration")]

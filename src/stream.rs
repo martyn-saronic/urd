@@ -176,6 +176,7 @@ pub struct CommandStream {
     pending_commands: Vec<CommandInfo>,
     eof_logged: bool,
     inside_brace_block: bool,
+    clear_pending_commands_signal: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl CommandStream {

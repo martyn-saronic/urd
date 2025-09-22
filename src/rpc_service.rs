@@ -157,8 +157,8 @@ impl RpcService {
             
             // Route to appropriate handler based on command type
             let response = match command_request.command_type.as_str() {
-                "abort" => Self::handle_abort_command(&controller, &command_request, start_time).await,
-                "pose" | "status" | "health" | "clear" => Self::handle_metacommand(&controller, &command_request, start_time).await,
+                "halt" => Self::handle_halt_command(&controller, &command_request, start_time).await,
+                "pose" | "status" | "health" | "clear" | "reconnect" => Self::handle_metacommand(&controller, &command_request, start_time).await,
                 _ => {
                     CommandResponse {
                         command_type: command_request.command_type.clone(),
@@ -234,56 +234,56 @@ impl RpcService {
         })
     }
     
-    /// Handle abort command specifically
-    async fn handle_abort_command(
+    /// Handle halt command specifically  
+    async fn handle_halt_command(
         controller: &Arc<Mutex<RobotController>>,
         request: &CommandRequest,
         start_time: std::time::Instant,
     ) -> CommandResponse {
-        // Execute abort with timeout
+        // Execute halt with timeout
         let timeout_duration = Duration::from_secs(
             request.timeout_secs.unwrap_or(5).min(10) as u64
         );
         
-        let abort_result = timeout(
+        let halt_result = timeout(
             timeout_duration,
-            Self::execute_abort(controller)
+            Self::execute_halt(controller)
         ).await;
         
-        match abort_result {
+        match halt_result {
             Ok(Ok(final_state)) => {
                 let duration = start_time.elapsed().as_millis() as u64;
-                info!("Abort completed successfully in {}ms", duration);
+                info!("Halt completed successfully in {}ms", duration);
                 
                 let mut response_data = serde_json::Map::new();
                 response_data.insert("final_state".to_string(), serde_json::to_value(final_state).unwrap_or(serde_json::Value::Null));
                 
                 CommandResponse {
-                    command_type: "abort".to_string(),
+                    command_type: "halt".to_string(),
                     success: true,
-                    message: "Robot motion aborted successfully".to_string(),
+                    message: "Robot motion halted successfully".to_string(),
                     duration_ms: duration,
                     data: Some(serde_json::Value::Object(response_data)),
                 }
             },
             Ok(Err(e)) => {
                 let duration = start_time.elapsed().as_millis() as u64;
-                error!("Abort failed: {}", e);
+                error!("Halt failed: {}", e);
                 CommandResponse {
-                    command_type: "abort".to_string(),
+                    command_type: "halt".to_string(),
                     success: false,
-                    message: format!("Abort failed: {}", e),
+                    message: format!("Halt failed: {}", e),
                     duration_ms: duration,
                     data: None,
                 }
             },
             Err(_) => {
                 let duration = start_time.elapsed().as_millis() as u64;
-                error!("Abort timed out after {}ms", duration);
+                error!("Halt timed out after {}ms", duration);
                 CommandResponse {
-                    command_type: "abort".to_string(),
+                    command_type: "halt".to_string(),
                     success: false,
-                    message: format!("Abort timed out after {} seconds", timeout_duration.as_secs()),
+                    message: format!("Halt timed out after {} seconds", timeout_duration.as_secs()),
                     duration_ms: duration,
                     data: None,
                 }
@@ -291,20 +291,20 @@ impl RpcService {
         }
     }
     
-    /// Execute emergency abort with proper completion detection
-    async fn execute_abort(controller: &Arc<Mutex<RobotController>>) -> Result<RobotStateData> {
+    /// Execute halt with proper completion detection
+    async fn execute_halt(controller: &Arc<Mutex<RobotController>>) -> Result<RobotStateData> {
         let mut guard = controller.lock().await;
         
-        info!("Executing emergency abort via primary socket");
+        info!("Executing halt via primary socket");
         
-        // Send immediate abort through primary socket (bypasses interpreter queue)
-        guard.emergency_abort()
-            .context("Failed to send emergency abort command")?;
+        // Send immediate halt through primary socket (bypasses interpreter queue)  
+        // Use rpc_abort() instead of emergency_abort() to avoid shutting down daemon
+        guard.rpc_abort()
+            .context("Failed to send RPC halt command")?;
         
-        // Signal emergency abort to interpreter for immediate exit from any operations
-        if let Ok(interpreter) = guard.interpreter_mut() {
-            interpreter.signal_emergency_abort();
-        }
+        // NOTE: We do NOT call interpreter.signal_emergency_abort() here because that
+        // would shut down the entire command stream. For RPC abort, we only want to
+        // halt robot motion, not terminate the daemon.
         
         // Wait for actual motion cessation by monitoring robot state
         let start_time = std::time::Instant::now();
@@ -322,13 +322,13 @@ impl RpcService {
             // We consider the robot stopped if it's in a safe state
             // This is a simplified check - in production you might want to check velocity
             if robot_status.safety_mode >= 1 { // Normal or reduced mode
-                info!("Robot motion stopped, abort complete");
+                info!("Robot motion stopped, halt complete");
                 
                 // Convert robot status to state data for response
                 let state_data = RobotStateData {
                     rtime: Some(robot_status.last_updated),
                     stime: chrono::Utc::now().timestamp_millis() as f64 / 1000.0,
-                    event_type: "abort_completion".to_string(),
+                    event_type: "halt_completion".to_string(),
                     robot_mode: robot_status.robot_mode,
                     robot_mode_name: robot_status.robot_mode_name.clone(),
                     safety_mode: robot_status.safety_mode,
@@ -368,6 +368,7 @@ impl RpcService {
                     "status" => "Robot status retrieved successfully", 
                     "health" => "Robot health check completed successfully",
                     "clear" => "Robot interpreter buffer cleared successfully",
+                    "reconnect" => "Robot reconnection completed successfully",
                     _ => "Metacommand completed successfully",
                 };
                 
@@ -520,16 +521,31 @@ impl RpcService {
                 data.insert("last_robot_update".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(robot_status.last_updated).unwrap_or(serde_json::Number::from(0))));
             },
             "clear" => {
-                // Reuse @clear logic from stream.rs - just execute the clear operation
+                // Reuse @clear logic from stream.rs but also clear URD's pending commands
                 drop(guard); // Release the guard so we can get mutable access
                 let mut guard = controller.lock().await;
                 
+                // Signal stream processor to clear its pending commands buffer
+                guard.signal_clear_pending_commands();
+                
+                // Also clear the robot interpreter buffer 
                 if let Ok(interpreter) = guard.interpreter_mut() {
                     let _clear_result = interpreter.clear()
                         .context("Failed to clear interpreter buffer")?;
                 }
                 
-                data.insert("message".to_string(), serde_json::Value::String("Buffer cleared".to_string()));
+                data.insert("message".to_string(), serde_json::Value::String("Both interpreter and pending command buffers cleared".to_string()));
+                data.insert("timestamp".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(chrono::Utc::now().timestamp_millis() as f64 / 1000.0).unwrap_or(serde_json::Number::from(0))));
+            },
+            "reconnect" => {
+                // Reuse @reconnect logic from stream.rs - reconnect and reinitialize
+                drop(guard); // Release the guard so we can get mutable access
+                let mut guard = controller.lock().await;
+                
+                guard.reconnect().await
+                    .context("Failed to reconnect and reinitialize robot")?;
+                
+                data.insert("message".to_string(), serde_json::Value::String("Reconnection successful".to_string()));
                 data.insert("timestamp".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(chrono::Utc::now().timestamp_millis() as f64 / 1000.0).unwrap_or(serde_json::Number::from(0))));
             },
             _ => {
@@ -563,11 +579,12 @@ impl RpcService {
         RpcServiceStats {
             command_service_active: self.command_service_active,
             supported_commands: vec![
-                "abort".to_string(),
+                "halt".to_string(),
                 "pose".to_string(),
                 "status".to_string(),
                 "health".to_string(),
                 "clear".to_string(),
+                "reconnect".to_string(),
             ],
         }
     }

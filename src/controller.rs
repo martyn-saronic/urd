@@ -13,6 +13,7 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 use tracing::{info, error};
 
@@ -71,6 +72,8 @@ pub struct RobotController {
     monitor_output: Option<MonitorOutput>,
     state: RobotState,
     robot_status: RobotStatus,
+    /// Signal for stream processor to clear its pending commands buffer
+    clear_pending_commands_signal: Arc<AtomicBool>,
 }
 
 impl RobotController {
@@ -88,6 +91,7 @@ impl RobotController {
             monitor_output: None,
             state: RobotState::Disconnected,
             robot_status: RobotStatus::default(),
+            clear_pending_commands_signal: Arc::new(AtomicBool::new(false)),
         })
     }
     
@@ -401,6 +405,7 @@ impl RobotController {
 
     /// Send immediate abort through primary socket (bypasses interpreter queue)
     /// This should be faster than sending abort through the interpreter
+    /// WARNING: This shuts down the entire daemon - use rpc_abort() for RPC calls
     pub fn emergency_abort(&mut self) -> Result<()> {
         if let Some(primary_socket) = &mut self.primary_socket {
             info!("Sending emergency abort through primary socket");
@@ -426,6 +431,54 @@ impl RobotController {
         } else {
             Err(anyhow!("Primary socket not connected"))
         }
+    }
+    
+    /// RPC abort - sends halt command through primary socket WITHOUT shutting down daemon
+    /// This is for RPC calls that want to stop motion but keep the daemon running
+    pub fn rpc_abort(&mut self) -> Result<()> {
+        if let Some(primary_socket) = &mut self.primary_socket {
+            info!("Sending RPC abort through primary socket");
+            
+            // Send abort command directly to primary socket
+            let abort_script = "halt\n";
+            
+            primary_socket.write_all(abort_script.as_bytes())
+                .context("Failed to send RPC abort to primary socket")?;
+            
+            info!("RPC abort sent through primary socket");
+            
+            // Clear the interpreter buffer so commands don't resume after reconnect
+            if let Some(interpreter) = &mut self.interpreter {
+                match interpreter.clear() {
+                    Ok(_) => info!("Interpreter buffer cleared after abort"),
+                    Err(e) => info!("Failed to clear interpreter buffer after abort: {}", e),
+                }
+            }
+            
+            // NOTE: We do NOT call interpreter.signal_emergency_abort() here because
+            // that would shut down the command stream. For RPC abort, we only want
+            // to halt robot motion and clear buffer, not terminate the daemon.
+            
+            Ok(())
+        } else {
+            Err(anyhow!("Primary socket not connected"))
+        }
+    }
+    
+    /// Get the clear pending commands signal for monitoring by stream processor
+    pub fn get_clear_pending_commands_signal(&self) -> Arc<AtomicBool> {
+        self.clear_pending_commands_signal.clone()
+    }
+    
+    /// Signal the stream processor to clear its pending commands buffer
+    pub fn signal_clear_pending_commands(&self) {
+        info!("Signaling stream processor to clear pending commands");
+        self.clear_pending_commands_signal.store(true, Ordering::Relaxed);
+    }
+    
+    /// Reset the clear pending commands signal (called by stream processor after clearing)
+    pub fn reset_clear_pending_commands_signal(&self) {
+        self.clear_pending_commands_signal.store(false, Ordering::Relaxed);
     }
     
     /// Process robot state data and output JSON monitoring
