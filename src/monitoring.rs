@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
-use crate::zenoh_publisher::ZenohPublisher;
+use crate::publisher::ZenohPublisher;
 
 /// Combined position monitoring data (TCP pose + joint angles)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -257,7 +257,6 @@ impl MonitorOutput {
         println!("{}", json);
         
         // Also publish to Zenoh if available (spawned to keep method sync)
-        #[cfg(feature = "zenoh-integration")]
         if let Some(ref zenoh_publisher) = self.zenoh_publisher {
             let publisher = zenoh_publisher.clone();
             let data_clone = data.clone();
@@ -291,7 +290,6 @@ impl MonitorOutput {
         }
         
         // Also publish to Zenoh if available (spawned to keep method sync)
-        #[cfg(feature = "zenoh-integration")]
         if let Some(ref zenoh_publisher) = self.zenoh_publisher {
             let publisher = zenoh_publisher.clone();
             let data_clone = data.clone();

@@ -10,9 +10,9 @@ pub mod interpreter;
 pub mod json_output;
 pub mod monitoring;
 pub mod rtde;
-pub mod stream;
-pub mod zenoh_publisher;
-pub mod rpc_service;
+pub mod publisher;
+pub mod block_executor;
+pub mod urd_interface;
 
 pub use config::{Config, DaemonConfig, InterpreterConfig};
 pub use controller::{RobotController, RobotState as ControllerRobotState};
@@ -21,9 +21,13 @@ pub use interpreter::{InterpreterClient, CommandResult};
 pub use json_output::{CommandStatusEvent, ErrorEvent, BufferEvent, CommandStatus};
 pub use monitoring::{MonitorOutput, PositionData, RobotStateData};
 pub use rtde::{RTDEClient, RTDEMessage, RobotState, RTDESubscriber};
-pub use stream::{CommandStream, CommandStats};
-pub use zenoh_publisher::ZenohPublisher;
-pub use rpc_service::{RpcService, CommandRequest, CommandResponse, AbortRequest, AbortResponse, RpcServiceStats};
+pub use publisher::ZenohPublisher;
+
+// Legacy exports - to be removed
+pub use block_executor::{BlockExecutor, URScriptResult, CommandResult as BlockCommandResult, URScriptStatus, CommandStatus as BlockCommandStatus, ExecutorStats};
+// New unified command processing exports
+pub use block_executor::{CommandDispatcher, CommandClass, ExecutionPriority, CommandExecutionResult, CommandFuture};
+pub use urd_interface::{URDInterface, HealthStatus, PoseData};
 
 /// High-level robot control interface
 pub struct ControlInterface {

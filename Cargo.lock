@@ -2922,6 +2922,7 @@ dependencies = [
  "tracing-subscriber",
  "uhlc",
  "urlencoding",
+ "uuid",
  "zenoh",
 ]
 

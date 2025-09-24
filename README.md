@@ -44,18 +44,30 @@ brew install --cask docker
 ## 🚀 Quick Start
 
 ```bash
-# Enter Nix shell with all dependencies
+# Enter Nix shell with all dependencies (includes Python SDK automatically)
 nix develop
 
-# Run the daemon (uses default simulator config)
-urd
+# Option 1: Stdin Interface
+urd                              # Interactive URScript commands
+cat paths/path.txt | urd         # Batch URScript execution
+
+# Option 2: RPC Interface  
+urd-rpc                          # Start RPC service in background
+urd-cli command status           # Send commands via dynamic CLI
+test-urd-py                      # Test Python SDK
 
 # For hardware robot, specify config:
 # urd --config config/hw_config.yaml
+# urd-rpc --config config/hw_config.yaml
+```
 
-# alternatively: pipe a urscript into the daemon
-cat paths/path.txt | urd
+**Python SDK Usage:**
+```python
+import urd_py
 
+with urd_py.Client() as bot:
+    bot.command("@status")
+    bot.execute("popup('Hello from Python!')")
 ```
 
 ### Optional: Robot Simulation
@@ -721,18 +733,41 @@ fi
 echo "Robot safely stopped"
 ```
 
-**Python Integration:**
+**Python SDK (Recommended):**
+```python
+import urd_py
+
+# Simple robot control
+with urd_py.Client() as bot:
+    bot.command("@reconnect")           # Reconnect robot
+    status = bot.command("@status")     # Get robot status
+    bot.execute("popup('Hello!')")      # Execute URScript
+    
+    # Move robot
+    pose = [0, -1.57, 0, -1.57, 0, 0]
+    result = bot.execute(f"movej({pose}, a=0.1, v=0.1)")
+    if result.success:
+        print(f"Movement completed in {result.duration_ms}ms")
+
+def emergency_stop():
+    """Emergency stop using Python SDK"""
+    try:
+        with urd_py.Client() as bot:
+            result = bot.command("@halt")
+            return result.success
+    except urd_py.URDConnectionError:
+        return False
+```
+
+**Python Integration (Legacy - subprocess):**
 ```python
 import subprocess
 import json
 
 def emergency_stop():
-    result = subprocess.run(['urd-abort', '--format', 'json'], 
+    result = subprocess.run(['urd-cli', 'command', 'halt'], 
                           capture_output=True, text=True)
-    if result.returncode == 0:
-        response = json.loads(result.stdout)
-        return response['success']
-    return False
+    return result.returncode == 0
 ```
 
 **From Other Languages:**
@@ -748,13 +783,45 @@ The `urd-abort` command provides comprehensive error handling:
 - **Exit Code 3**: Network/communication failure
 - **Exit Code 4**: No response from RPC service (URD not running)
 
-### Future RPC Commands (Phase 3.2)
+## 🏗️ RPC Architecture & Development Roadmap
 
-The RPC architecture supports extensible command types:
+### Current Implementation Status (Phase 3.2 ✅)
 
-- **`execute`**: Batch URScript execution with intelligent buffering
-- **`status`**: Comprehensive robot status queries  
-- **`pause`/`resume`**: Program flow control
-- **`clear`**: Buffer management commands
+**Non-blocking Command Architecture** - Commands are classified by blocking behavior:
+- **Emergency**: `halt` - Always available, interrupts execution
+- **Query**: `status`, `health`, `pose` - Bypass BlockExecutor, always available  
+- **Meta**: `reconnect`, `clear`, `help` - Use BlockExecutor, throw if busy
+- **Execution**: `execute` - Mutually exclusive, throw if busy
 
-All follow the same `urd/command` topic pattern with typed request/response payloads.
+### Architecture TODOs
+
+#### High Priority
+- [ ] **Pose Command Implementation** - Return actual TCP position from RTDE monitoring
+- [ ] **Advanced Health Diagnostics** - Include robot mode, safety status, joint states
+- [ ] **Execution Queue Management** - Multiple queued executions with priorities
+- [ ] **Program Flow Control** - Pause/resume functionality for long-running programs
+- [ ] **Async Execution Results** - Non-blocking execute with completion callbacks
+
+#### Medium Priority  
+- [ ] **Service Discovery Enhancements** - Schema versioning and capability negotiation
+- [ ] **Command History & Replay** - Store and replay command sequences
+- [ ] **Performance Metrics** - Latency tracking and throughput optimization
+- [ ] **Configuration Hot-reload** - Runtime config updates without restart
+- [ ] **Multi-robot Support** - Single daemon managing multiple robot instances
+
+#### Low Priority
+- [ ] **Plugin Architecture** - Custom command extension system
+- [ ] **Web Dashboard** - HTTP interface for monitoring and basic control
+- [ ] **GraphQL API** - Alternative query interface for complex operations
+- [ ] **Command Templating** - Parameterized URScript templates
+- [ ] **Simulation Integration** - Seamless sim-to-real deployment
+
+### Technical Debt
+- [ ] **Remove deprecated `stream` module** - Replace with `StdinInterface`
+- [ ] **Consolidate error types** - Unified error handling across modules  
+- [ ] **Memory optimization** - Reduce allocations in hot paths
+- [ ] **Test coverage** - Unit tests for all RPC command handlers
+- [ ] **Documentation** - API docs and architecture guides
+
+### Implementation Notes
+All RPC commands follow the `urd/command` topic pattern with typed JSON payloads. The architecture maintains backward compatibility while supporting extensible command types and behaviors.

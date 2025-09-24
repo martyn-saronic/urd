@@ -4,7 +4,6 @@
 //! This module publishes structured data to separate Zenoh topics,
 //! enabling multiple consumers and better data organization.
 
-#[cfg(feature = "zenoh-integration")]
 use {
     crate::monitoring::{PositionData, RobotStateData},
     anyhow::{anyhow, Context, Result},
@@ -18,14 +17,12 @@ use {
 /// 
 /// Manages separate publishers for pose and state data, providing
 /// structured topic-based publishing as an alternative to JSON stdout.
-#[cfg(feature = "zenoh-integration")]
 pub struct ZenohPublisher {
     pose_publisher: Arc<Publisher<'static>>,
     state_publisher: Arc<Publisher<'static>>,
     _session: Arc<Session>, // Keep session alive
 }
 
-#[cfg(feature = "zenoh-integration")]
 impl Clone for ZenohPublisher {
     fn clone(&self) -> Self {
         Self {
@@ -36,7 +33,6 @@ impl Clone for ZenohPublisher {
     }
 }
 
-#[cfg(feature = "zenoh-integration")]
 impl ZenohPublisher {
     /// Create a new ZenohPublisher with configurable topic prefix
     /// 
@@ -124,35 +120,13 @@ impl ZenohPublisher {
     }
 }
 
-#[cfg(not(feature = "zenoh-integration"))]
-pub struct ZenohPublisher;
-
-#[cfg(not(feature = "zenoh-integration"))]
-impl ZenohPublisher {
-    pub async fn new(_topic_prefix: &str) -> anyhow::Result<Self> {
-        Err(anyhow::anyhow!("Zenoh integration not enabled. Enable with --features zenoh-integration"))
-    }
-    
-    pub async fn publish_pose(&self, _position_data: &crate::monitoring::PositionData) -> anyhow::Result<()> {
-        Ok(()) // No-op when feature is disabled
-    }
-    
-    pub async fn publish_state(&self, _state_data: &crate::monitoring::RobotStateData) -> anyhow::Result<()> {
-        Ok(()) // No-op when feature is disabled
-    }
-    
-    pub fn get_topics(&self) -> Vec<String> {
-        vec![]
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     
-    #[cfg(feature = "zenoh-integration")]
     #[tokio::test]
-    async fn test_zenoh_publisher_creation() {
+    async fn test_publisher_creation() {
         // This test requires Zenoh to be running, so we'll make it conditional
         if std::env::var("ZENOH_TEST_ENABLED").is_ok() {
             let publisher = ZenohPublisher::new("urd/robot").await;
@@ -165,10 +139,4 @@ mod tests {
         }
     }
     
-    #[cfg(not(feature = "zenoh-integration"))]
-    #[tokio::test]
-    async fn test_zenoh_publisher_disabled() {
-        let publisher = ZenohPublisher::new("urd/robot").await;
-        assert!(publisher.is_err(), "Should fail when Zenoh feature is disabled");
-    }
 }
