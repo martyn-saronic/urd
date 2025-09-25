@@ -716,6 +716,7 @@ impl BlockExecutor {
     ) -> Result<bool> {
         let mut started_blocks = std::collections::HashSet::new();
         let mut completed_blocks = std::collections::HashSet::new();
+        let mut block_start_times = std::collections::HashMap::new(); // Track start times for duration calculation
         let mut last_seen_executed_id = 0;
         
         // Monitor individual blocks until all complete or final wait completes
@@ -733,6 +734,8 @@ impl BlockExecutor {
                 if !started_blocks.contains(&block_id) && last_executed >= block_id {
                     // This block just started executing
                     started_blocks.insert(block_id);
+                    let start_time = std::time::Instant::now();
+                    block_start_times.insert(block_id, start_time); // Record start time for duration calculation
                     info!("Block {} started executing: {}", block_id, blocks[index]);
                     
                     // Publish started event
@@ -769,16 +772,26 @@ impl BlockExecutor {
                         
                         if is_completed {
                             completed_blocks.insert(block_id);
-                            info!("Block {} completed: {}", block_id, blocks[index]);
                             
-                            // Publish completion event
+                            // Calculate execution time from start to completion
+                            let execution_time_ms = if let Some(start_time) = block_start_times.get(&block_id) {
+                                Some(start_time.elapsed().as_millis() as u64)
+                            } else {
+                                None
+                            };
+                            
+                            info!("Block {} completed: {} ({}ms)", 
+                                  block_id, blocks[index], 
+                                  execution_time_ms.map(|t| t.to_string()).unwrap_or("?".to_string()));
+                            
+                            // Publish completion event with execution time
                             if let Some(publisher) = &self.publisher {
                                 let block_data = crate::BlockExecutionData {
                                     block_id,
                                     status: "completed".to_string(),
                                     command: blocks[index].to_string(),
                                     timestamp: crate::json_output::current_timestamp(),
-                                    execution_time_ms: None,
+                                    execution_time_ms,
                                 };
                                 if let Err(e) = publisher.publish_blocks(&block_data).await {
                                     tracing::warn!("Failed to publish block completion: {}", e);
