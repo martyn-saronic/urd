@@ -13,6 +13,16 @@ use {
     zenoh::{Session, pubsub::Publisher},
 };
 
+/// Block execution data for URScript debugging
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BlockExecutionData {
+    pub block_id: u32,
+    pub status: String,
+    pub command: String,
+    pub timestamp: f64,
+    pub execution_time_ms: Option<u64>,
+}
+
 /// Zenoh publisher for robot data
 /// 
 /// Manages separate publishers for pose and state data, providing
@@ -20,6 +30,7 @@ use {
 pub struct ZenohPublisher {
     pose_publisher: Arc<Publisher<'static>>,
     state_publisher: Arc<Publisher<'static>>,
+    blocks_publisher: Arc<Publisher<'static>>,
     _session: Arc<Session>, // Keep session alive
 }
 
@@ -28,6 +39,7 @@ impl Clone for ZenohPublisher {
         Self {
             pose_publisher: Arc::clone(&self.pose_publisher),
             state_publisher: Arc::clone(&self.state_publisher),
+            blocks_publisher: Arc::clone(&self.blocks_publisher),
             _session: Arc::clone(&self._session),
         }
     }
@@ -36,9 +48,10 @@ impl Clone for ZenohPublisher {
 impl ZenohPublisher {
     /// Create a new ZenohPublisher with configurable topic prefix
     /// 
-    /// Sets up publishers for pose and state data using:
+    /// Sets up publishers for pose, state, and block execution data using:
     /// - `{prefix}/pose` - TCP pose and joint position data
     /// - `{prefix}/state` - Robot mode, safety mode, runtime state
+    /// - `{prefix}/blocks` - URScript block execution status and progress
     pub async fn new(topic_prefix: &str) -> Result<Self> {
         info!("Initializing Zenoh session for robot data publishing");
         
@@ -50,6 +63,7 @@ impl ZenohPublisher {
         // Construct topic names from prefix
         let pose_topic = format!("{}/pose", topic_prefix);
         let state_topic = format!("{}/state", topic_prefix);
+        let blocks_topic = format!("{}/blocks", topic_prefix);
         
         // Create publishers for different data types
         let pose_publisher = session
@@ -61,14 +75,21 @@ impl ZenohPublisher {
             .declare_publisher(state_topic.clone())
             .await
             .map_err(|e| anyhow!("Failed to create state publisher: {}", e))?;
+            
+        let blocks_publisher = session
+            .declare_publisher(blocks_topic.clone())
+            .await
+            .map_err(|e| anyhow!("Failed to create blocks publisher: {}", e))?;
         
         info!("Zenoh publishers created successfully");
         debug!("  - Pose publisher: {}", pose_topic);
         debug!("  - State publisher: {}", state_topic);
+        debug!("  - Blocks publisher: {}", blocks_topic);
         
         Ok(Self {
             pose_publisher: Arc::new(pose_publisher),
             state_publisher: Arc::new(state_publisher),
+            blocks_publisher: Arc::new(blocks_publisher),
             _session: Arc::new(session),
         })
     }
@@ -105,11 +126,28 @@ impl ZenohPublisher {
         Ok(())
     }
     
+    /// Publish block execution data
+    /// 
+    /// Publishes BlockExecutionData to the `urd/robot/blocks` topic as JSON.
+    pub async fn publish_blocks(&self, block_data: &BlockExecutionData) -> Result<()> {
+        let payload = serde_json::to_vec(block_data)
+            .context("Failed to serialize block execution data")?;
+            
+        self.blocks_publisher
+            .put(payload)
+            .await
+            .map_err(|e| anyhow!("Failed to publish block execution data: {}", e))?;
+            
+        debug!("Published block execution data: {} - {}", block_data.block_id, block_data.status);
+        Ok(())
+    }
+    
     /// Get topic information for debugging
     pub fn get_topics(&self) -> Vec<String> {
         vec![
             format!("{}/pose", self.topic_prefix()),
-            format!("{}/state", self.topic_prefix())
+            format!("{}/state", self.topic_prefix()),
+            format!("{}/blocks", self.topic_prefix())
         ]
     }
     

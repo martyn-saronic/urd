@@ -153,7 +153,7 @@ impl InterpreterClient {
         let id = reply.get(2)
             .and_then(|m| m.as_str().parse::<u32>().ok())
             .unwrap_or(0);
-        
+            
         Ok(CommandResult {
             id,
             raw_reply,

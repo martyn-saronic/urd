@@ -64,20 +64,41 @@ pub struct URScriptRequest {
     pub urscript: String,
 }
 
-/// Service discovery response
+/// Legacy service discovery response (for backwards compatibility)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServiceDiscoveryResponse {
     pub services: Vec<ServiceInfo>,
 }
 
-/// Information about an available RPC service
+/// Enhanced service discovery response with RPC services and publishers
 #[derive(Debug, Serialize, Deserialize)]
+pub struct EnhancedServiceDiscoveryResponse {
+    pub rpc_services: Vec<ServiceInfo>,
+    pub publishers: Vec<PublisherInfo>,
+    
+    // Backwards compatibility - include legacy services field
+    pub services: Vec<ServiceInfo>,
+}
+
+/// Information about an available RPC service
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceInfo {
     pub topic: String,
     pub name: String,
     pub description: String,
     pub request_schema: HashMap<String, String>,
     pub response_schema: HashMap<String, String>,
+}
+
+/// Information about an available publisher
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublisherInfo {
+    pub topic: String,
+    pub name: String,
+    pub description: String,
+    pub message_schema: HashMap<String, String>,
+    pub rate_hz: u32,
+    pub message_type: String,
 }
 
 /// RPC Service for handling Zenoh queries
@@ -324,8 +345,8 @@ impl RpcService {
             
             let start_time = std::time::Instant::now();
             
-            // Create service discovery response
-            let discovery_response = Self::create_discovery_response();
+            // Create enhanced service discovery response
+            let discovery_response = Self::create_enhanced_discovery_response();
             
             // Serialize and send response
             let response_json = match serde_json::to_string(&discovery_response) {
@@ -501,8 +522,8 @@ impl RpcService {
         response
     }
     
-    /// Create the service discovery response with metadata about available services
-    fn create_discovery_response() -> ServiceDiscoveryResponse {
+    /// Create the enhanced service discovery response with RPC services and publishers
+    fn create_enhanced_discovery_response() -> EnhancedServiceDiscoveryResponse {
         let mut command_request_schema = HashMap::new();
         command_request_schema.insert("command_type".to_string(), "string".to_string());
         command_request_schema.insert("timeout_secs".to_string(), "optional<int>".to_string());
@@ -528,23 +549,81 @@ impl RpcService {
         execute_response_schema.insert("failure_reason".to_string(), "optional<string>".to_string());
         execute_response_schema.insert("data".to_string(), "optional<object>".to_string());
         
-        ServiceDiscoveryResponse {
-            services: vec![
-                ServiceInfo {
-                    topic: "urd/command".to_string(),
-                    name: "command".to_string(),
-                    description: "Robot control commands (halt, status, reconnect, health, clear, pose, help)".to_string(),
-                    request_schema: command_request_schema,
-                    response_schema: command_response_schema,
+        // RPC Services
+        let rpc_services = vec![
+            ServiceInfo {
+                topic: "urd/command".to_string(),
+                name: "command".to_string(),
+                description: "Robot control commands (halt, status, reconnect, health, clear, pose, help)".to_string(),
+                request_schema: command_request_schema.clone(),
+                response_schema: command_response_schema.clone(),
+            },
+            ServiceInfo {
+                topic: "urd/execute".to_string(),
+                name: "execute".to_string(),
+                description: "URScript execution".to_string(),
+                request_schema: execute_request_schema.clone(),
+                response_schema: execute_response_schema.clone(),
+            },
+        ];
+        
+        // Publishers (data streaming topics)
+        let publishers = vec![
+            PublisherInfo {
+                topic: "urd/robot/pose".to_string(),
+                name: "pose".to_string(),
+                description: "TCP pose and joint positions".to_string(),
+                message_schema: {
+                    let mut schema = HashMap::new();
+                    schema.insert("tcp_pose".to_string(), "array[6]<float>".to_string());
+                    schema.insert("joint_positions".to_string(), "array[6]<float>".to_string());
+                    schema.insert("timestamp".to_string(), "float".to_string());
+                    schema
                 },
-                ServiceInfo {
-                    topic: "urd/execute".to_string(),
-                    name: "execute".to_string(),
-                    description: "URScript execution".to_string(),
-                    request_schema: execute_request_schema,
-                    response_schema: execute_response_schema,
+                rate_hz: 10,
+                message_type: "PositionData".to_string(),
+            },
+            PublisherInfo {
+                topic: "urd/robot/state".to_string(),
+                name: "state".to_string(), 
+                description: "Robot mode, safety mode, and runtime state".to_string(),
+                message_schema: {
+                    let mut schema = HashMap::new();
+                    schema.insert("robot_mode".to_string(), "int".to_string());
+                    schema.insert("robot_mode_name".to_string(), "string".to_string());
+                    schema.insert("safety_mode".to_string(), "int".to_string());
+                    schema.insert("safety_mode_name".to_string(), "string".to_string());
+                    schema.insert("runtime_state".to_string(), "int".to_string());
+                    schema.insert("runtime_state_name".to_string(), "string".to_string());
+                    schema.insert("timestamp".to_string(), "float".to_string());
+                    schema
                 },
-            ],
+                rate_hz: 10,
+                message_type: "RobotStateData".to_string(),
+            },
+            PublisherInfo {
+                topic: "urd/robot/blocks".to_string(),
+                name: "blocks".to_string(),
+                description: "URScript block execution status and progress".to_string(),
+                message_schema: {
+                    let mut schema = HashMap::new();
+                    schema.insert("block_id".to_string(), "int".to_string());
+                    schema.insert("status".to_string(), "string".to_string());
+                    schema.insert("command".to_string(), "string".to_string());
+                    schema.insert("timestamp".to_string(), "float".to_string());
+                    schema.insert("execution_time_ms".to_string(), "optional<int>".to_string());
+                    schema
+                },
+                rate_hz: 0, // Event-driven, not periodic
+                message_type: "BlockExecutionData".to_string(),
+            },
+        ];
+        
+        EnhancedServiceDiscoveryResponse {
+            rpc_services: rpc_services.clone(),
+            publishers,
+            // Backwards compatibility - include legacy services field
+            services: rpc_services,
         }
     }
 
@@ -558,7 +637,7 @@ impl RpcService {
     ) -> RpcResponse {
         info!("Executing URScript via URDInterface: {}", request.urscript.trim());
         
-        match urd_interface.execute_urscript(&request.urscript).await {
+        match urd_interface.execute_urscript_blocking(&request.urscript).await {
             Ok(result) => {
                 match result.status {
                     urd::URScriptStatus::Completed => {
@@ -672,9 +751,20 @@ async fn main() -> Result<()> {
         ).await
     ));
     
+    // Set up block execution publishing if monitoring is enabled
+    if enable_monitoring {
+        let controller_guard = controller.lock().await;
+        if let Some(publisher) = controller_guard.get_zenoh_publisher() {
+            drop(controller_guard); // Release the controller lock
+            let mut executor_guard = executor.lock().await;
+            executor_guard.set_publisher(publisher);
+            info!("📊 Block execution debugging enabled");
+        }
+    }
+    
     // Create CommandDispatcher and URDInterface
     let dispatcher = CommandDispatcher::new(Arc::clone(&executor));
-    let urd_interface = URDInterface::new(dispatcher, Arc::clone(&controller));
+    let urd_interface = URDInterface::new(dispatcher, Arc::clone(&controller), Arc::clone(&executor));
     
     // Start background queue processor
     let queue_processor_dispatcher = urd_interface.dispatcher().clone();

@@ -314,6 +314,11 @@ impl MonitorOutput {
         
         Ok(())
     }
+    
+    /// Get a clone of the Zenoh publisher for use in other components
+    pub fn get_zenoh_publisher(&self) -> Option<ZenohPublisher> {
+        self.zenoh_publisher.clone()
+    }
 }
 
 /// Robot mode name mappings

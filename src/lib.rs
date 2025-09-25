@@ -21,7 +21,7 @@ pub use interpreter::{InterpreterClient, CommandResult};
 pub use json_output::{CommandStatusEvent, ErrorEvent, BufferEvent, CommandStatus};
 pub use monitoring::{MonitorOutput, PositionData, RobotStateData};
 pub use rtde::{RTDEClient, RTDEMessage, RobotState, RTDESubscriber};
-pub use publisher::ZenohPublisher;
+pub use publisher::{ZenohPublisher, BlockExecutionData};
 
 // Legacy exports - to be removed
 pub use block_executor::{BlockExecutor, URScriptResult, CommandResult as BlockCommandResult, URScriptStatus, CommandStatus as BlockCommandStatus, ExecutorStats};

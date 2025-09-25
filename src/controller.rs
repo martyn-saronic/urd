@@ -472,6 +472,11 @@ impl RobotController {
         self.clear_pending_commands_signal.store(false, Ordering::Relaxed);
     }
     
+    /// Get a clone of the Zenoh publisher for block execution debugging
+    pub fn get_zenoh_publisher(&self) -> Option<crate::ZenohPublisher> {
+        self.monitor_output.as_ref()?.get_zenoh_publisher()
+    }
+    
     /// Process robot state data and output JSON monitoring
     /// 
     /// # Arguments

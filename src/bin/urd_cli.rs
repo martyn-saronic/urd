@@ -1,19 +1,22 @@
-//! URD Truly Dynamic CLI - Service Discovery Based Command Interface
+//! URD Enhanced CLI - RPC and Subscription Interface
 //!
-//! Fully dynamic command-line interface that discovers available RPC services at startup
-//! and executes commands generically based on service schemas. No hardcoded service logic.
+//! Enhanced command-line interface that provides:
+//! - RPC operations: urd-cli rpc command halt, urd-cli rpc execute "script"
+//! - Subscription operations: urd-cli sub pose -n 10, urd-cli sub state -t 30
+//! 
+//! Supports both service discovery for RPC services and publisher discovery.
 
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use anyhow::{Result, Context};
 use tracing::info;
 use zenoh::Session;
-use std::env;
 
-/// Service information from discovery response
+/// RPC Service information from discovery response
 #[derive(Debug, Clone, Deserialize)]
-struct ServiceInfo {
+struct RpcServiceInfo {
     topic: String,
     name: String,
     description: String,
@@ -21,16 +24,120 @@ struct ServiceInfo {
     response_schema: HashMap<String, String>,
 }
 
-/// Service discovery response format
-#[derive(Debug, Deserialize)]
-struct ServiceDiscoveryResponse {
-    services: Vec<ServiceInfo>,
+/// Publisher information from discovery response
+#[derive(Debug, Clone, Deserialize)]
+struct PublisherInfo {
+    topic: String,
+    name: String,
+    description: String,
+    message_schema: HashMap<String, String>,
+    rate_hz: u32,
+    message_type: String,
 }
 
-/// URD CLI with fully dynamic service discovery
+/// Enhanced service discovery response format
+#[derive(Debug, Deserialize)]
+struct EnhancedDiscoveryResponse {
+    #[serde(default)]
+    rpc_services: Vec<RpcServiceInfo>,
+    #[serde(default)]
+    publishers: Vec<PublisherInfo>,
+    
+    // Backwards compatibility with old format
+    #[serde(default)]
+    services: Vec<RpcServiceInfo>,
+}
+
+/// Output format options
+#[derive(Debug, Clone)]
+enum OutputFormat {
+    Text,
+    Json,
+    Compact,
+}
+
+impl std::str::FromStr for OutputFormat {
+    type Err = String;
+    
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "text" => Ok(OutputFormat::Text),
+            "json" => Ok(OutputFormat::Json),
+            "compact" => Ok(OutputFormat::Compact),
+            _ => Err(format!("Invalid format: {}", s))
+        }
+    }
+}
+
+/// Main CLI arguments
+#[derive(Parser)]
+#[command(name = "urd_cli")]
+#[command(about = "Enhanced URD CLI - RPC and Subscription Interface")]
+#[command(version)]
+struct Args {
+    /// Enable verbose output
+    #[arg(short, long, global = true)]
+    verbose: bool,
+    
+    /// RPC timeout in seconds
+    #[arg(long, default_value = "30", global = true)]
+    rpc_timeout: u64,
+    
+    /// Output format: text, json, compact
+    #[arg(long, default_value = "text", global = true)]
+    format: OutputFormat,
+    
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// RPC operations (request/response)
+    Rpc {
+        #[command(subcommand)]
+        service: RpcCommands,
+    },
+    
+    /// Subscribe to publisher topics (streaming)
+    Sub {
+        /// Topic name to subscribe to  
+        topic: String,
+        
+        /// Limit number of messages
+        #[arg(short = 'n', long)]
+        count: Option<usize>,
+        
+        /// Timeout in seconds
+        #[arg(short, long)]  
+        timeout: Option<u64>,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum RpcCommands {
+    /// Robot control commands
+    Command {
+        /// Command type or shortcut (halt, status, pose, health, clear, reconnect, help)
+        command_type: String,
+        
+        /// Timeout in seconds for command completion
+        #[arg(short, long)]
+        timeout_secs: Option<u32>,
+    },
+    
+    /// Execute URScript code
+    Execute {
+        /// URScript code to execute
+        urscript: String,
+    },
+}
+
+/// Enhanced URD CLI with RPC and subscription support
 struct URDCli {
     session: Session,
-    services: HashMap<String, ServiceInfo>,
+    rpc_services: HashMap<String, RpcServiceInfo>,
+    publishers: HashMap<String, PublisherInfo>,
 }
 
 impl URDCli {
@@ -42,16 +149,17 @@ impl URDCli {
             
         let mut cli = Self {
             session,
-            services: HashMap::new(),
+            rpc_services: HashMap::new(),
+            publishers: HashMap::new(),
         };
         
         cli.discover_services().await?;
         Ok(cli)
     }
     
-    /// Discover available RPC services
+    /// Discover available RPC services and publishers
     async fn discover_services(&mut self) -> Result<()> {
-        info!("Discovering available RPC services...");
+        info!("Discovering available services and publishers...");
         
         let replies = self.session
             .get("urd/discover")
@@ -64,276 +172,113 @@ impl URDCli {
                 let response_data = sample.payload().to_bytes();
                 let response_str = String::from_utf8_lossy(&response_data);
                 
-                let discovery_response: ServiceDiscoveryResponse = 
+                let discovery: EnhancedDiscoveryResponse = 
                     serde_json::from_str(&response_str)
                         .context("Failed to parse service discovery response")?;
                 
-                for service in discovery_response.services {
-                    info!("Discovered service: {} ({})", service.name, service.topic);
-                    self.services.insert(service.name.clone(), service);
+                // Handle new format with separate RPC services and publishers
+                for service in discovery.rpc_services {
+                    info!("Discovered RPC service: {} ({})", service.name, service.topic);
+                    self.rpc_services.insert(service.name.clone(), service);
                 }
+                
+                for publisher in discovery.publishers {
+                    info!("Discovered publisher: {} ({})", publisher.name, publisher.topic);
+                    self.publishers.insert(publisher.name.clone(), publisher);
+                }
+                
+                // Backwards compatibility: handle old format
+                for service in discovery.services {
+                    if !self.rpc_services.contains_key(&service.name) {
+                        info!("Discovered legacy service: {} ({})", service.name, service.topic);
+                        self.rpc_services.insert(service.name.clone(), service);
+                    }
+                }
+                
                 break; // Use first valid response
             }
         }
         
-        if self.services.is_empty() {
+        if self.rpc_services.is_empty() && self.publishers.is_empty() {
             return Err(anyhow::anyhow!(
-                "No services discovered. Is urd-rpc running?\n\
-                Try: nix develop && urd-rpc"
+                "No services or publishers discovered. Is urd daemon running?\n\
+                Try: urd"
             ));
         }
         
-        info!("Service discovery completed. Found {} services", self.services.len());
+        info!("Service discovery completed. RPC services: {}, Publishers: {}", 
+            self.rpc_services.len(), self.publishers.len());
         Ok(())
     }
     
-    /// Execute command based on raw command line arguments - FULLY GENERIC
-    async fn execute_from_args(&self, args: Vec<String>) -> Result<()> {
-        if args.len() < 2 {
-            self.show_help();
-            return Ok(());
-        }
-        
-        let mut verbose = false;
-        let mut format = "text".to_string();
-        let mut rpc_timeout = 30u64;
-        let mut service_name = None;
-        let mut service_args = HashMap::new();
-        
-        let mut i = 1; // Skip program name
-        while i < args.len() {
-            match args[i].as_str() {
-                "-v" | "--verbose" => {
-                    verbose = true;
-                    i += 1;
-                }
-                "--format" => {
-                    if i + 1 < args.len() {
-                        format = args[i + 1].clone();
-                        i += 2;
-                    } else {
-                        return Err(anyhow::anyhow!("--format requires a value"));
-                    }
-                }
-                "--rpc-timeout" => {
-                    if i + 1 < args.len() {
-                        rpc_timeout = args[i + 1].parse()
-                            .context("Invalid RPC timeout value")?;
-                        i += 2;
-                    } else {
-                        return Err(anyhow::anyhow!("--rpc-timeout requires a value"));
-                    }
-                }
-                "-h" | "--help" => {
-                    self.show_help();
-                    return Ok(());
-                }
-                arg => {
-                    if service_name.is_none() {
-                        // First non-flag argument is the service name
-                        if self.services.contains_key(arg) {
-                            service_name = Some(arg.to_string());
-                        } else {
-                            return Err(anyhow::anyhow!("Unknown service: {}. Available services: {}", 
-                                arg, self.services.keys().cloned().collect::<Vec<_>>().join(", ")));
-                        }
-                    } else if arg.starts_with("--") {
-                        // Service-specific argument
-                        let key = &arg[2..]; // Remove --
-                        if i + 1 < args.len() {
-                            service_args.insert(key.to_string(), args[i + 1].clone());
-                            i += 1;
-                        } else {
-                            return Err(anyhow::anyhow!("--{} requires a value", key));
-                        }
-                    } else {
-                        // Positional argument - map to first required field if service is known
-                        if let Some(ref svc_name) = service_name {
-                            if let Some(service) = self.services.get(svc_name) {
-                                if let Some(positional_field) = self.get_positional_field(service) {
-                                    let field_cli_name = positional_field.replace('_', "-");
-                                    if !service_args.contains_key(&field_cli_name) {
-                                        service_args.insert(field_cli_name, arg.to_string());
-                                    } else {
-                                        return Err(anyhow::anyhow!("Too many positional arguments for service '{}'", svc_name));
-                                    }
-                                } else {
-                                    return Err(anyhow::anyhow!("Service '{}' doesn't support positional arguments. Use --help to see available options", svc_name));
-                                }
-                            }
-                        } else {
-                            return Err(anyhow::anyhow!("Unexpected argument: {}", arg));
-                        }
-                    }
-                    i += 1;
-                }
+    /// Execute command based on CLI arguments
+    async fn execute_command(&self, args: Args) -> Result<()> {
+        match args.command {
+            Commands::Rpc { ref service } => {
+                self.execute_rpc_command(service.clone(), &args).await
             }
-        }
-        
-        let service_name = service_name
-            .ok_or_else(|| anyhow::anyhow!("No service specified. Available services: {}", 
-                self.services.keys().cloned().collect::<Vec<_>>().join(", ")))?;
-        
-        let service = self.services.get(&service_name).unwrap();
-        
-        // Build request payload GENERICALLY from service schema and parsed args
-        let request_payload = self.build_generic_request(service, &service_args)?;
-        
-        // Call service with generic payload - NO SERVICE-SPECIFIC CODE
-        self.call_service_generic(service, request_payload, verbose, &format, rpc_timeout).await
-    }
-    
-    /// Get the primary field for positional arguments based on service type
-    fn get_positional_field(&self, service: &ServiceInfo) -> Option<String> {
-        // Service-specific heuristics for positional arguments
-        match service.name.as_str() {
-            "execute" => {
-                // For execute service, urscript is the obvious positional field
-                if service.request_schema.contains_key("urscript") {
-                    Some("urscript".to_string())
-                } else {
-                    None
-                }
-            }
-            "command" => {
-                // For command service, command_type is the obvious positional field
-                if service.request_schema.contains_key("command_type") {
-                    Some("command_type".to_string())
-                } else {
-                    None
-                }
-            }
-            _ => {
-                // For generic services, find the first required string field
-                // This is a reasonable heuristic for most services
-                service.request_schema.iter()
-                    .find(|(_, field_type)| {
-                        !field_type.starts_with("optional<") && field_type.contains("string")
-                    })
-                    .map(|(field_name, _)| field_name.clone())
+            Commands::Sub { topic, count, timeout } => {
+                self.execute_subscription(topic, count, timeout, args.format).await
             }
         }
     }
     
-    /// Show dynamic help based on discovered services
-    fn show_help(&self) {
-        println!("URD Dynamic CLI - Service Discovery Based Command Interface");
-        println!();
-        println!("Usage: urd_cli [OPTIONS] <SERVICE> [SERVICE_ARGS...]");
-        println!();
-        println!("Global Options:");
-        println!("  -v, --verbose              Enable verbose output");
-        println!("      --format <FORMAT>      Output format: text, json, compact [default: text]");
-        println!("      --rpc-timeout <SECS>   RPC timeout in seconds [default: 30]");
-        println!("  -h, --help                 Show this help message");
-        println!();
-        println!("Available Services:");
+    /// Execute RPC command
+    async fn execute_rpc_command(&self, rpc_cmd: RpcCommands, args: &Args) -> Result<()> {
+        // Ensure we have RPC services
+        if self.rpc_services.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No RPC services discovered. Is the daemon running?"
+            ));
+        }
         
-        for service in self.services.values() {
-            println!("  {}  {}", service.name, service.description);
-            
-            // Show positional argument if available
-            if let Some(positional_field) = self.get_positional_field(service) {
-                if let Some(field_type) = service.request_schema.get(&positional_field) {
-                    println!("    Positional: <{}> ({})", positional_field.to_uppercase(), field_type);
+        match rpc_cmd {
+            RpcCommands::Command { command_type, timeout_secs } => {
+                let service = self.rpc_services.get("command")
+                    .ok_or_else(|| anyhow::anyhow!("Command service not available"))?;
+                
+                let mut request = serde_json::Map::new();
+                request.insert("command_type".to_string(), 
+                    serde_json::Value::String(command_type));
+                
+                if let Some(timeout) = timeout_secs {
+                    request.insert("timeout_secs".to_string(),
+                        serde_json::Value::Number(timeout.into()));
                 }
+                
+                self.call_rpc_service(service, serde_json::Value::Object(request), args).await
             }
-            
-            println!("    Arguments:");
-            for (field, field_type) in &service.request_schema {
-                let required = if field_type.starts_with("optional<") { "(optional)" } else { "(required)" };
-                let is_positional = self.get_positional_field(service).as_ref() == Some(field);
-                let pos_note = if is_positional { " [can use positionally]" } else { "" };
-                println!("      --{}  {} {}{}", field.replace('_', "-"), field_type, required, pos_note);
-            }
-            println!();
-        }
-    }
-    
-    /// Build request payload generically from service schema and CLI arguments
-    fn build_generic_request(
-        &self,
-        service: &ServiceInfo,
-        args: &HashMap<String, String>,
-    ) -> Result<serde_json::Value> {
-        let mut request = serde_json::Map::new();
-        
-        // Map ALL schema fields to CLI arguments automatically
-        for (field_name, field_type) in &service.request_schema {
-            let cli_arg_name = field_name.replace('_', "-");
-            
-            if let Some(value) = args.get(&cli_arg_name) {
-                // Parse value based on field type
-                let parsed_value = self.parse_field_value(value, field_type)?;
-                request.insert(field_name.clone(), parsed_value);
-            } else if !field_type.starts_with("optional<") {
-                return Err(anyhow::anyhow!("Missing required field: --{} ({})", cli_arg_name, field_type));
-            }
-        }
-        
-        Ok(serde_json::Value::Object(request))
-    }
-    
-    /// Parse field value based on schema type
-    fn parse_field_value(&self, value: &str, field_type: &str) -> Result<serde_json::Value> {
-        // Strip optional wrapper
-        let base_type = if field_type.starts_with("optional<") && field_type.ends_with(">") {
-            &field_type[9..field_type.len()-1]
-        } else {
-            field_type
-        };
-        
-        match base_type {
-            "string" => Ok(serde_json::Value::String(value.to_string())),
-            "int" => {
-                let parsed: i64 = value.parse()
-                    .with_context(|| format!("Invalid integer value for {}: {}", field_type, value))?;
-                Ok(serde_json::Value::Number(parsed.into()))
-            }
-            "bool" => {
-                let parsed: bool = value.parse()
-                    .with_context(|| format!("Invalid boolean value for {}: {}", field_type, value))?;
-                Ok(serde_json::Value::Bool(parsed))
-            }
-            "object" => {
-                // Try to parse as JSON object
-                serde_json::from_str(value)
-                    .with_context(|| format!("Invalid JSON object for {}: {}", field_type, value))
-            }
-            _ => {
-                // Default to string for unknown types
-                Ok(serde_json::Value::String(value.to_string()))
+            RpcCommands::Execute { urscript } => {
+                let service = self.rpc_services.get("execute")
+                    .ok_or_else(|| anyhow::anyhow!("Execute service not available"))?;
+                
+                let mut request = serde_json::Map::new();
+                request.insert("urscript".to_string(),
+                    serde_json::Value::String(urscript));
+                
+                self.call_rpc_service(service, serde_json::Value::Object(request), args).await
             }
         }
     }
     
-    /// Call RPC service generically - NO SERVICE-SPECIFIC KNOWLEDGE
-    async fn call_service_generic(
-        &self,
-        service: &ServiceInfo,
-        request_payload: serde_json::Value,
-        verbose: bool,
-        format: &str,
-        rpc_timeout: u64,
-    ) -> Result<()> {
-        let request_json = serde_json::to_string(&request_payload)?;
+    /// Call RPC service
+    async fn call_rpc_service(&self, service: &RpcServiceInfo, request: serde_json::Value, args: &Args) -> Result<()> {
+        let request_json = serde_json::to_string(&request)?;
         
-        if verbose {
-            info!("🔄 Calling service: {}", service.topic);
+        if args.verbose {
+            info!("🔄 Calling RPC service: {}", service.topic);
             info!("📤 Request: {}", request_json);
         }
         
         let start_time = Instant::now();
         
-        // Send RPC query to discovered service
         let replies = self.session
             .get(&service.topic)
             .payload(request_json)
-            .timeout(Duration::from_secs(rpc_timeout))
+            .timeout(Duration::from_secs(args.rpc_timeout))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send RPC query: {}", e))?;
         
-        // Process response generically
         while let Ok(reply) = replies.recv_async().await {
             match reply.result() {
                 Ok(sample) => {
@@ -341,7 +286,7 @@ impl URDCli {
                     let response_str = String::from_utf8_lossy(&response_bytes);
                     let total_elapsed = start_time.elapsed();
                     
-                    if verbose {
+                    if args.verbose {
                         info!("📥 Response: {}", response_str);
                         info!("⏱️  Total time: {:?}", total_elapsed);
                     }
@@ -349,7 +294,7 @@ impl URDCli {
                     // Parse and format response
                     match serde_json::from_str::<serde_json::Value>(&response_str) {
                         Ok(response_data) => {
-                            self.format_response(&response_data, format)?;
+                            self.format_rpc_response(&response_data, &args.format)?;
                         }
                         Err(_) => {
                             println!("{}", response_str); // Fallback to raw response
@@ -367,13 +312,13 @@ impl URDCli {
         Err(anyhow::anyhow!("No response received"))
     }
     
-    /// Format response based on output format - GENERIC
-    fn format_response(&self, response: &serde_json::Value, format: &str) -> Result<()> {
+    /// Format RPC response
+    fn format_rpc_response(&self, response: &serde_json::Value, format: &OutputFormat) -> Result<()> {
         match format {
-            "json" => {
+            OutputFormat::Json => {
                 println!("{}", serde_json::to_string_pretty(response)?);
             }
-            "compact" => {
+            OutputFormat::Compact => {
                 if let Some(success) = response.get("success").and_then(|v| v.as_bool()) {
                     let status = if success { "✓" } else { "✗" };
                     let message = response.get("message")
@@ -384,10 +329,10 @@ impl URDCli {
                         .unwrap_or(0);
                     println!("{} {} ({}ms)", status, message, duration);
                 } else {
-                    println!("{}", serde_json::to_string_pretty(response)?);
+                    println!("{}", response);
                 }
             }
-            _ => { // "text" or default
+            OutputFormat::Text => {
                 if let Some(success) = response.get("success").and_then(|v| v.as_bool()) {
                     let message = response.get("message")
                         .and_then(|v| v.as_str())
@@ -406,11 +351,12 @@ impl URDCli {
                         }
                     }
                     
-                    // Generic handling for any additional fields
-                    for (key, value) in response.as_object().unwrap_or(&serde_json::Map::new()) {
-                        if !["success", "message", "data"].contains(&key.as_str()) && !value.is_null() {
-                            println!("🔹 {}: {}", key, value);
-                        }
+                    // Show execution details
+                    if let Some(command_id) = response.get("command_id").and_then(|v| v.as_str()) {
+                        println!("🆔 Command ID: {}", command_id);
+                    }
+                    if let Some(term_id) = response.get("termination_id").and_then(|v| v.as_str()) {
+                        println!("🏁 Termination ID: {}", term_id);
                     }
                 } else {
                     println!("{}", serde_json::to_string_pretty(response)?);
@@ -419,28 +365,205 @@ impl URDCli {
         }
         Ok(())
     }
+    
+    /// Execute subscription command
+    async fn execute_subscription(
+        &self, 
+        topic: String, 
+        count: Option<usize>, 
+        timeout: Option<u64>,
+        format: OutputFormat
+    ) -> Result<()> {
+        // Ensure we have publishers
+        if self.publishers.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No publishers discovered. Is the daemon running with monitoring enabled?"
+            ));
+        }
+        
+        let publisher = self.publishers.get(&topic)
+            .ok_or_else(|| anyhow::anyhow!("Unknown topic: {}. Available topics: {}", 
+                topic, self.publishers.keys().cloned().collect::<Vec<_>>().join(", ")))?;
+        
+        println!("📡 Subscribing to topic: {} ({})", publisher.topic, publisher.description);
+        
+        if let Some(n) = count {
+            println!("📊 Message limit: {} messages", n);
+        }
+        
+        if let Some(t) = timeout {  
+            println!("⏱️  Timeout: {} seconds", t);
+        }
+        
+        println!("Press Ctrl+C to stop...");
+        println!();
+        
+        let subscriber = self.session.declare_subscriber(&publisher.topic).await
+            .map_err(|e| anyhow::anyhow!("Failed to create subscriber: {}", e))?;
+        
+        let start_time = Instant::now();
+        let mut message_count = 0usize;
+        
+        // Handle Ctrl+C gracefully
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        ctrlc::set_handler(move || {
+            let _ = tx.send(());
+        })?;
+        
+        loop {
+            tokio::select! {
+                // Received Ctrl+C
+                _ = rx.recv() => {
+                    println!("\n🛑 Interrupted by user");
+                    break;
+                }
+                
+                // Received message
+                sample = subscriber.recv_async() => {
+                    if let Ok(sample) = sample {
+                        message_count += 1;
+                        
+                        let payload = sample.payload().to_bytes();
+                        let payload_str = String::from_utf8_lossy(&payload);
+                        
+                        match format {
+                            OutputFormat::Json => {
+                                // Try to parse and pretty-print JSON
+                                if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                                    println!("{}", serde_json::to_string_pretty(&json_value)?);
+                                } else {
+                                    println!("{}", payload_str);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                // Structured text output
+                                if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                                    self.format_publisher_message(&topic, &json_value)?;
+                                } else {
+                                    println!("{}", payload_str);
+                                }
+                            }
+                            OutputFormat::Compact => {
+                                // Single line compact format
+                                println!("[{}] {}: {}", message_count, 
+                                    chrono::Utc::now().format("%H:%M:%S%.3f"), payload_str);
+                            }
+                        }
+                        
+                        // Check limits
+                        if let Some(max_count) = count {
+                            if message_count >= max_count {
+                                println!("\n✅ Reached message limit ({} messages)", max_count);
+                                break;
+                            }
+                        }
+                        
+                        if let Some(max_timeout) = timeout {
+                            if start_time.elapsed().as_secs() >= max_timeout {
+                                println!("\n⏱️  Reached timeout ({} seconds)", max_timeout);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        println!("\n📊 Total messages received: {}", message_count);
+        println!("⏱️  Total time: {:?}", start_time.elapsed());
+        
+        Ok(())
+    }
+    
+    /// Format publisher message for text display
+    fn format_publisher_message(&self, topic: &str, message: &serde_json::Value) -> Result<()> {
+        match topic {
+            "pose" => {
+                // Format pose data nicely
+                if let Some(timestamp) = message.get("timestamp").and_then(|t| t.as_f64()) {
+                    println!("📍 Pose Update [{}]:", 
+                        chrono::DateTime::from_timestamp_millis((timestamp * 1000.0) as i64)
+                            .unwrap_or_default().format("%H:%M:%S%.3f"));
+                }
+                
+                if let Some(tcp_pose) = message.get("tcp_pose").and_then(|p| p.as_array()) {
+                    println!("   TCP: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}]",
+                        tcp_pose.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        tcp_pose.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        tcp_pose.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        tcp_pose.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        tcp_pose.get(4).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        tcp_pose.get(5).and_then(|v| v.as_f64()).unwrap_or(0.0));
+                }
+                
+                if let Some(joints) = message.get("joint_angles").and_then(|j| j.as_array()) {
+                    println!("   Joints: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}]",
+                        joints.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        joints.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        joints.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        joints.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        joints.get(4).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        joints.get(5).and_then(|v| v.as_f64()).unwrap_or(0.0));
+                }
+            }
+            "state" => {
+                // Format state data nicely
+                if let Some(robot_state) = message.get("robot_state").and_then(|s| s.as_str()) {
+                    let state_icon = match robot_state {
+                        "RUNNING" => "🟢",
+                        "IDLE" => "🟡", 
+                        "STOPPED" => "🔴",
+                        _ => "⚪",
+                    };
+                    println!("{} State: {}", state_icon, robot_state);
+                }
+                
+                if let Some(safety_mode) = message.get("safety_mode").and_then(|s| s.as_str()) {
+                    println!("   Safety: {}", safety_mode);
+                }
+                
+                if let Some(connected) = message.get("connected").and_then(|c| c.as_bool()) {
+                    let conn_icon = if connected { "🔗" } else { "❌" };
+                    println!("   Connection: {} {}", conn_icon, if connected { "Connected" } else { "Disconnected" });
+                }
+            }
+            _ => {
+                // Generic formatting
+                println!("{}", serde_json::to_string_pretty(message)?);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse command line arguments
+    let args = Args::parse();
+    
     // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter("urd_cli=info")
-        .init();
+    if args.verbose {
+        tracing_subscriber::fmt()
+            .with_env_filter("urd_cli=info")
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter("urd_cli=warn")
+            .init();
+    }
     
     // Create CLI instance and discover services
     let cli = match URDCli::new().await {
         Ok(cli) => cli,
         Err(e) => {
             eprintln!("❌ Failed to initialize URD CLI: {}", e);
-            eprintln!("💡 Make sure 'urd-rpc' service is running");
+            eprintln!("💡 Make sure 'urd' daemon is running");
             std::process::exit(1);
         }
     };
     
-    // Parse raw command line arguments and execute GENERICALLY
-    let args: Vec<String> = env::args().collect();
-    match cli.execute_from_args(args).await {
+    // Execute the command
+    match cli.execute_command(args).await {
         Ok(_) => {},
         Err(e) => {
             eprintln!("❌ Command failed: {}", e);

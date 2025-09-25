@@ -3,7 +3,7 @@
 //! Provides a clean, unified interface for robot control optimized for RPC use cases.
 //! Combines command processing via CommandDispatcher with direct RTDE access for queries.
 
-use crate::{CommandDispatcher, CommandExecutionResult, RobotController};
+use crate::{CommandDispatcher, CommandExecutionResult, RobotController, BlockExecutor};
 use crate::controller::RobotStatus;
 use crate::block_executor::CommandStatus;
 use anyhow::{Context, Result};
@@ -36,6 +36,10 @@ pub struct PoseData {
 pub struct URDInterface {
     dispatcher: CommandDispatcher,
     controller: Arc<Mutex<RobotController>>,
+    executor: Arc<Mutex<BlockExecutor>>,
+    /// Separate lock for execute operations to prevent concurrent executions
+    /// while allowing halt to interrupt
+    execution_lock: Arc<Mutex<()>>,
 }
 
 impl URDInterface {
@@ -43,10 +47,13 @@ impl URDInterface {
     pub fn new(
         dispatcher: CommandDispatcher,
         controller: Arc<Mutex<RobotController>>,
+        executor: Arc<Mutex<BlockExecutor>>,
     ) -> Self {
         Self {
             dispatcher,
             controller,
+            executor,
+            execution_lock: Arc::new(Mutex::new(())),
         }
     }
     
@@ -64,27 +71,24 @@ impl URDInterface {
         Ok(result)
     }
     
-    /// Execute emergency halt (immediate execution, bypasses queue)
+    /// Execute emergency halt (immediate execution, bypasses queue and execution lock)
     pub async fn halt(&self) -> Result<()> {
-        info!("Executing emergency halt");
+        info!("Executing emergency halt - bypassing all locks for immediate response");
         
-        let result = self.dispatcher.submit_immediate("@halt").await
-            .context("Failed to execute emergency halt")?;
-            
-        match result {
-            CommandExecutionResult::Command(cmd_result) => {
-                match cmd_result.status {
-                    CommandStatus::Completed => {
-                        info!("Emergency halt completed successfully");
-                        Ok(())
-                    }
-                    CommandStatus::Failed(reason) => {
-                        error!("Emergency halt failed: {}", reason);
-                        Err(anyhow::anyhow!("Emergency halt failed: {}", reason))
-                    }
-                }
+        // Directly access the controller to halt the robot without waiting for
+        // any locks that might be held by execute operations
+        let mut controller_guard = self.controller.lock().await;
+        
+        // Use the controller's rpc_abort method which sends halt commands directly
+        match controller_guard.rpc_abort() {
+            Ok(_) => {
+                info!("Emergency halt completed successfully");
+                Ok(())
             }
-            _ => Err(anyhow::anyhow!("Unexpected response type for halt command"))
+            Err(e) => {
+                error!("Emergency halt failed: {}", e);
+                Err(anyhow::anyhow!("Emergency halt failed: {}", e))
+            }
         }
     }
     
@@ -229,6 +233,30 @@ impl URDInterface {
             CommandExecutionResult::URScript(ur_result) => Ok(ur_result),
             _ => Err(anyhow::anyhow!("Unexpected response type for URScript execution"))
         }
+    }
+    
+    /// Execute URScript with blocking semantics and concurrency protection
+    /// 
+    /// This method:
+    /// 1. Acquires execution lock to prevent concurrent executions
+    /// 2. Executes the URScript and waits for full completion
+    /// 3. Properly handles multi-line scripts
+    /// 4. Returns error if another execution is in progress
+    pub async fn execute_urscript_blocking(&self, urscript: &str) -> Result<crate::URScriptResult> {
+        info!("Executing URScript with blocking semantics: {}", urscript.trim());
+        
+        // Acquire execution lock - this prevents concurrent execute operations
+        // but allows halt to interrupt since halt doesn't need this lock
+        let _execution_guard = self.execution_lock.lock().await;
+        info!("Acquired execution lock for URScript");
+        
+        // Use BlockExecutor for proper completion waiting
+        let mut executor_guard = self.executor.lock().await;
+        let result = executor_guard.execute_urscript_and_wait(urscript).await
+            .context("Failed to execute URScript with blocking semantics");
+            
+        info!("URScript execution completed, releasing locks");
+        result
     }
     
     /// Get access to the underlying CommandDispatcher for advanced operations

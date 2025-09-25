@@ -133,6 +133,8 @@ pub struct BlockExecutor {
     execution_queue: VecDeque<QueuedExecution>,
     current_execution: Option<uuid::Uuid>,
     queue_enabled: bool,
+    // Block execution publishing for debugging
+    publisher: Option<crate::ZenohPublisher>,
 }
 
 /// CommandDispatcher provides unified command processing for both RPC and Stdin interfaces
@@ -152,6 +154,7 @@ impl BlockExecutor {
             execution_queue: VecDeque::new(),
             current_execution: None,
             queue_enabled: true, // Enabled by default for RPC-first architecture
+            publisher: None,
         }
     }
     
@@ -168,7 +171,14 @@ impl BlockExecutor {
             execution_queue: VecDeque::new(),
             current_execution: None,
             queue_enabled: true, // Enabled by default for RPC-first architecture
+            publisher: None,
         }
+    }
+    
+    /// Set the Zenoh publisher for block execution events
+    pub fn set_publisher(&mut self, publisher: crate::ZenohPublisher) {
+        self.publisher = Some(publisher);
+        info!("Block execution publisher enabled for debugging");
     }
     
     /// Enable execution queue management
@@ -293,34 +303,87 @@ impl BlockExecutor {
     }
     
     /// Execute URScript and wait for completion with blocking semantics
+    /// Handles multi-line URScript by executing each line as a separate block
     pub async fn execute_urscript_and_wait(&mut self, urscript: &str) -> Result<URScriptResult> {
-        // Execute URScript and get termination token
-        let result = {
-            let mut guard = self.controller.lock().await;
-            guard.interpreter_mut()?
-                .execute_command(urscript)
-                .context("Failed to execute URScript")
-        }?;
+        info!("Executing URScript with multi-block support: {} lines", urscript.lines().count());
         
-        let mut urscript_result = URScriptResult {
-            id: result.id,
-            urscript: urscript.to_string(),
-            status: URScriptStatus::Sent,
-            termination_id: None,
-        };
-        
-        // Check if URScript was rejected
-        if result.rejected {
-            // Output JSON for rejected URScript
-            json_output::output::command_rejected(urscript.trim(), &result.raw_reply);
-            urscript_result.status = URScriptStatus::Failed("URScript rejected by interpreter".to_string());
-            return Ok(urscript_result);
+        // Split URScript into individual blocks (lines)
+        let blocks: Vec<&str> = urscript.lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty() && !line.starts_with('#')) // Skip empty lines and comments
+            .collect();
+            
+        if blocks.is_empty() {
+            return Err(anyhow::anyhow!("URScript contains no executable blocks"));
         }
         
-        // Output JSON for URScript sent
-        json_output::output::command_sent(result.id, urscript.trim());
+        let mut block_ids = Vec::new();
+        let mut first_block_id = 0;
+        let overall_start_time = std::time::Instant::now();
         
-        // Send termination token
+        // Execute each block separately
+        for (index, block) in blocks.iter().enumerate() {
+            info!("Executing block {}/{}: {}", index + 1, blocks.len(), block);
+            
+            let result = {
+                let mut guard = self.controller.lock().await;
+                let error_context = format!("Failed to execute URScript block {}: {}", index + 1, block);
+                guard.interpreter_mut()?
+                    .execute_command(block)
+                    .context(error_context)
+            }?;
+            
+            // Track the first block for the overall result
+            if index == 0 {
+                first_block_id = result.id;
+            }
+            block_ids.push(result.id);
+            
+            // Check if block was rejected
+            if result.rejected {
+                json_output::output::command_rejected(block, &result.raw_reply);
+                
+                // Publish block rejection event
+                if let Some(publisher) = &self.publisher {
+                    let block_data = crate::BlockExecutionData {
+                        block_id: result.id,
+                        status: "rejected".to_string(),
+                        command: block.to_string(),
+                        timestamp: crate::json_output::current_timestamp(),
+                        execution_time_ms: None,
+                    };
+                    if let Err(e) = publisher.publish_blocks(&block_data).await {
+                        tracing::warn!("Failed to publish block rejection: {}", e);
+                    }
+                }
+                
+                return Ok(URScriptResult {
+                    id: first_block_id,
+                    urscript: urscript.to_string(),
+                    status: URScriptStatus::Failed(format!("Block {} rejected: {}", index + 1, result.raw_reply)),
+                    termination_id: None,
+                });
+            }
+            
+            // Output JSON for block sent
+            json_output::output::command_sent(result.id, block);
+            
+            // Publish block queued event
+            if let Some(publisher) = &self.publisher {
+                let block_data = crate::BlockExecutionData {
+                    block_id: result.id,
+                    status: "queued".to_string(),
+                    command: block.to_string(),
+                    timestamp: crate::json_output::current_timestamp(),
+                    execution_time_ms: None,
+                };
+                if let Err(e) = publisher.publish_blocks(&block_data).await {
+                    tracing::warn!("Failed to publish block queued: {}", e);
+                }
+            }
+        }
+        
+        // Send termination token after all blocks
         let termination_result = {
             let mut guard = self.controller.lock().await;
             guard.interpreter_mut()?
@@ -328,20 +391,38 @@ impl BlockExecutor {
                 .context("Failed to execute termination token")
         }?;
         
-        if !termination_result.rejected {
-            urscript_result.termination_id = Some(termination_result.id);
-        }
+        let termination_id = if !termination_result.rejected {
+            Some(termination_result.id)
+        } else {
+            None
+        };
         
-        // Wait for URScript to complete (can be interrupted by shutdown)
-        let wait_id = urscript_result.termination_id.unwrap_or(result.id);
-        let completed = self.wait_for_completion(wait_id).await?;
+        // Monitor individual block completion in real-time
+        let wait_id = if let Some(term_id) = termination_id {
+            info!("Monitoring {} blocks for individual completion, termination token ID: {}", block_ids.len(), term_id);
+            term_id
+        } else {
+            // Fallback to highest block ID if no termination token
+            let max_block_id = *block_ids.iter().max().unwrap();
+            info!("Monitoring {} blocks for individual completion, highest block ID: {}", block_ids.len(), max_block_id);
+            max_block_id
+        };
+        
+        let completed = self.wait_for_completion_with_block_monitoring(&block_ids, &blocks, wait_id).await?;
+        let total_execution_time = overall_start_time.elapsed();
+        
+        let urscript_result = URScriptResult {
+            id: first_block_id,
+            urscript: urscript.to_string(),
+            status: if completed { URScriptStatus::Completed } else { URScriptStatus::Failed("Interrupted by shutdown signal".to_string()) },
+            termination_id,
+        };
         
         if completed {
-            urscript_result.status = URScriptStatus::Completed;
+            info!("All {} blocks completed successfully in {:.2}s", block_ids.len(), total_execution_time.as_secs_f64());
             self.urscript_count += 1;
         } else {
-            // Shutdown was signaled during wait
-            urscript_result.status = URScriptStatus::Failed("Interrupted by shutdown signal".to_string());
+            info!("Block execution interrupted by shutdown signal");
         }
         
         Ok(urscript_result)
@@ -624,6 +705,110 @@ impl BlockExecutor {
             _ = ctrl_c => {},
             _ = terminate => {},
         }
+    }
+    
+    /// Wait for completion while monitoring individual block progress
+    async fn wait_for_completion_with_block_monitoring(
+        &mut self, 
+        block_ids: &[u32], 
+        blocks: &[&str],
+        final_wait_id: u32
+    ) -> Result<bool> {
+        let mut started_blocks = std::collections::HashSet::new();
+        let mut completed_blocks = std::collections::HashSet::new();
+        let mut last_seen_executed_id = 0;
+        
+        // Monitor individual blocks until all complete or final wait completes
+        loop {
+            let last_executed = {
+                let mut guard = self.controller.lock().await;
+                match guard.interpreter_mut() {
+                    Ok(interpreter) => interpreter.get_last_executed_id().unwrap_or(0),
+                    Err(_) => break, // If interpreter fails, exit monitoring
+                }
+            };
+            
+            // Check for newly started blocks (when they begin execution)
+            for (index, &block_id) in block_ids.iter().enumerate() {
+                if !started_blocks.contains(&block_id) && last_executed >= block_id {
+                    // This block just started executing
+                    started_blocks.insert(block_id);
+                    info!("Block {} started executing: {}", block_id, blocks[index]);
+                    
+                    // Publish started event
+                    if let Some(publisher) = &self.publisher {
+                        let block_data = crate::BlockExecutionData {
+                            block_id,
+                            status: "started".to_string(),
+                            command: blocks[index].to_string(),
+                            timestamp: crate::json_output::current_timestamp(),
+                            execution_time_ms: None,
+                        };
+                        if let Err(e) = publisher.publish_blocks(&block_data).await {
+                            tracing::warn!("Failed to publish block started: {}", e);
+                        }
+                    }
+                }
+            }
+            
+            // Check for block completion using a different approach:
+            // A block is "completed" when the NEXT block starts OR when we're at the final wait
+            if last_executed > last_seen_executed_id {
+                // Some progress was made, check what completed
+                for (index, &block_id) in block_ids.iter().enumerate() {
+                    if started_blocks.contains(&block_id) && !completed_blocks.contains(&block_id) {
+                        // This block has started, check if it should be considered completed
+                        let is_completed = if index == block_ids.len() - 1 {
+                            // Last block - completed when termination token executes
+                            last_executed >= final_wait_id
+                        } else {
+                            // Non-last block - completed when next block starts executing
+                            let next_block_id = block_ids[index + 1];
+                            last_executed >= next_block_id
+                        };
+                        
+                        if is_completed {
+                            completed_blocks.insert(block_id);
+                            info!("Block {} completed: {}", block_id, blocks[index]);
+                            
+                            // Publish completion event
+                            if let Some(publisher) = &self.publisher {
+                                let block_data = crate::BlockExecutionData {
+                                    block_id,
+                                    status: "completed".to_string(),
+                                    command: blocks[index].to_string(),
+                                    timestamp: crate::json_output::current_timestamp(),
+                                    execution_time_ms: None,
+                                };
+                                if let Err(e) = publisher.publish_blocks(&block_data).await {
+                                    tracing::warn!("Failed to publish block completion: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+                last_seen_executed_id = last_executed;
+            }
+            
+            // Check if final wait condition is met (all blocks + termination token)
+            if last_executed >= final_wait_id {
+                info!("Final wait condition met (ID: {}), all blocks completed", final_wait_id);
+                return Ok(true);
+            }
+            
+            // Check shutdown signal
+            if let Some(signal) = &self.shutdown_signal {
+                if signal.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("Shutdown signaled during block monitoring");
+                    return Ok(false);
+                }
+            }
+            
+            // Small delay before next check
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+        
+        Ok(false)
     }
     
     /// Get statistics about execution
