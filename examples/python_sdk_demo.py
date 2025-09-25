@@ -75,22 +75,14 @@ movej(ref_point, a=0.1, v=0.1)
                 
     except urd_py.URDConnectionError as e:
         print(f"✗ Connection Error: {e}")
-        print("\n💡 Make sure to start the URD RPC service first:")
-        print("   Terminal 1: urd-rpc")
+        print("\n💡 Make sure to start the URD daemon first:")
+        print("   Terminal 1: urd")
         print("   Terminal 2: python3 examples/python_sdk_demo.py")
         sys.exit(1)
         
-    except urd_py.URDCommandError as e:
-        print(f"✗ Command Error: {e}")
-        print(f"   Command: {e.command}")
-        if e.details:
-            print(f"   Details: {e.details}")
-        sys.exit(1)
-        
-    except urd_py.URDExecuteError as e:
-        print(f"✗ Execute Error: {e}")
-        print(f"   URScript: {e.urscript}")
-        if e.details:
+    except urd_py.URDError as e:
+        print(f"✗ Service Error: {e}")
+        if hasattr(e, 'details'):
             print(f"   Details: {e.details}")
         sys.exit(1)
         

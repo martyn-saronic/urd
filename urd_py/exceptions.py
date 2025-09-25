@@ -23,21 +23,6 @@ class URDConnectionError(URDError):
         super().__init__(message)
 
 
-class URDCommandError(URDError):
-    """Raised when a command RPC call fails."""
-    
-    def __init__(self, command: str, message: str, details: Optional[Dict[str, Any]] = None):
-        super().__init__(f"Command '{command}' failed: {message}", details)
-        self.command = command
-
-
-class URDExecuteError(URDError):
-    """Raised when a URScript execution RPC call fails."""
-    
-    def __init__(self, urscript: str, message: str, details: Optional[Dict[str, Any]] = None):
-        super().__init__(f"URScript execution failed: {message}", details)
-        self.urscript = urscript
-
 
 class URDTimeoutError(URDError):
     """Raised when an RPC call times out."""

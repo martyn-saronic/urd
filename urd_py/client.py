@@ -4,9 +4,10 @@ URD Python SDK - Core Client Implementation
 Main client class for interacting with URD RPC services via Zenoh with dynamic service discovery.
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Iterator, Callable
 import json
 import time
+import threading
 
 try:
     import zenoh
@@ -321,6 +322,123 @@ class Client:
         
         return {"services": services}
     
+    def subscribe(self, topic: str, 
+                 timeout: Optional[float] = None, 
+                 count: Optional[int] = None,
+                 callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> Iterator[Dict[str, Any]]:
+        """
+        Subscribe to a publisher topic and receive streaming data.
+        
+        Args:
+            topic: Topic name to subscribe to (e.g., 'pose', 'state', 'blocks')  
+            timeout: Optional timeout in seconds. If None, runs indefinitely.
+            count: Optional limit on number of messages to receive. If None, no limit.
+            callback: Optional callback function called for each message. 
+                     If provided, returns immediately and calls callback asynchronously.
+        
+        Returns:
+            Iterator[Dict[str, Any]]: Iterator yielding parsed JSON messages
+            
+        Raises:
+            URDConnectionError: If not connected or subscription fails
+        
+        Example:
+            # Blocking iteration
+            for message in client.subscribe('blocks', timeout=10, count=5):
+                print(f"Block {message['block_id']}: {message['status']}")
+                
+            # Async callback
+            def handle_pose(msg):
+                print(f"TCP: {msg['tcp_pose']}")
+            client.subscribe('pose', callback=handle_pose, timeout=30)
+        """
+        if not self._session:
+            raise URDConnectionError("Client not connected.")
+        
+        # Build full topic path
+        full_topic = f"urd/robot/{topic}"
+        
+        if callback:
+            # Async mode with callback
+            self._subscribe_async(full_topic, timeout, count, callback)
+            return iter([])  # Return empty iterator
+        else:
+            # Blocking mode with iterator
+            return self._subscribe_sync(full_topic, timeout, count)
+    
+    def _subscribe_sync(self, full_topic: str, timeout: Optional[float], count: Optional[int]) -> Iterator[Dict[str, Any]]:
+        """Synchronous subscription that yields messages."""
+        messages_received = 0
+        start_time = time.time()
+        
+        subscriber = self._session.declare_subscriber(full_topic)
+        
+        try:
+            while True:
+                # Check timeout
+                if timeout and (time.time() - start_time) > timeout:
+                    break
+                
+                # Check count limit
+                if count and messages_received >= count:
+                    break
+                
+                # Try to get a message (non-blocking)
+                try:
+                    # Get sample with a short timeout to allow for interruption
+                    sample = subscriber.recv_timeout(0.1)
+                    if sample:
+                        try:
+                            payload = sample.payload.to_bytes().decode('utf-8')
+                            message = json.loads(payload)
+                            messages_received += 1
+                            yield message
+                        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                            # Skip invalid messages
+                            continue
+                except Exception:
+                    # No message available, continue
+                    continue
+                    
+        finally:
+            subscriber.close()
+    
+    def _subscribe_async(self, full_topic: str, timeout: Optional[float], count: Optional[int], callback: Callable[[Dict[str, Any]], None]):
+        """Asynchronous subscription with callback."""
+        def subscription_thread():
+            messages_received = 0
+            start_time = time.time()
+            
+            subscriber = self._session.declare_subscriber(full_topic)
+            
+            try:
+                while True:
+                    # Check timeout
+                    if timeout and (time.time() - start_time) > timeout:
+                        break
+                    
+                    # Check count limit  
+                    if count and messages_received >= count:
+                        break
+                    
+                    try:
+                        sample = subscriber.recv_timeout(0.1)
+                        if sample:
+                            try:
+                                payload = sample.payload.to_bytes().decode('utf-8')
+                                message = json.loads(payload)
+                                messages_received += 1
+                                callback(message)
+                            except (json.JSONDecodeError, UnicodeDecodeError):
+                                continue
+                    except Exception:
+                        continue
+                        
+            finally:
+                subscriber.close()
+        
+        thread = threading.Thread(target=subscription_thread, daemon=True)
+        thread.start()
     
     def close(self) -> None:
         """Close the Zenoh session and cleanup resources."""
