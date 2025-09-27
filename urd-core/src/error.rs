@@ -1,4 +1,4 @@
-//! Error types for UR RTDE operations
+//! Error types for UR robot operations
 
 use thiserror::Error;
 
@@ -26,4 +26,13 @@ pub enum URError {
     
     #[error("YAML parsing error: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    
+    #[error("Telemetry error: {0}")]
+    Telemetry(String),
+    
+    #[error("Service error: {0}")]
+    Service(String),
+    
+    #[error("Generic error: {0}")]
+    Generic(#[from] anyhow::Error),
 }

@@ -134,7 +134,7 @@ pub struct BlockExecutor {
     current_execution: Option<uuid::Uuid>,
     queue_enabled: bool,
     // Block execution publishing for debugging
-    publisher: Option<crate::ZenohPublisher>,
+    publisher: Option<Box<dyn crate::telemetry::TelemetryPublisher>>,
 }
 
 /// CommandDispatcher provides unified command processing for both RPC and Stdin interfaces
@@ -176,7 +176,7 @@ impl BlockExecutor {
     }
     
     /// Set the Zenoh publisher for block execution events
-    pub fn set_publisher(&mut self, publisher: crate::ZenohPublisher) {
+    pub fn set_publisher(&mut self, publisher: Box<dyn crate::telemetry::TelemetryPublisher>) {
         self.publisher = Some(publisher);
         info!("Block execution publisher enabled for debugging");
     }
@@ -345,12 +345,14 @@ impl BlockExecutor {
                 
                 // Publish block rejection event
                 if let Some(publisher) = &self.publisher {
-                    let block_data = crate::BlockExecutionData {
-                        block_id: result.id,
+                    let block_data = crate::telemetry::BlockExecutionData {
+                        block_id: result.id.to_string(),
                         status: "rejected".to_string(),
                         command: block.to_string(),
                         timestamp: crate::json_output::current_timestamp(),
-                        execution_time_ms: None,
+                        execution_time_ms: 0,
+                        success: false,
+                        message: Some("Block rejected".to_string()),
                     };
                     if let Err(e) = publisher.publish_blocks(&block_data).await {
                         tracing::warn!("Failed to publish block rejection: {}", e);
@@ -370,12 +372,14 @@ impl BlockExecutor {
             
             // Publish block queued event
             if let Some(publisher) = &self.publisher {
-                let block_data = crate::BlockExecutionData {
-                    block_id: result.id,
+                let block_data = crate::telemetry::BlockExecutionData {
+                    block_id: result.id.to_string(),
                     status: "queued".to_string(),
                     command: block.to_string(),
                     timestamp: crate::json_output::current_timestamp(),
-                    execution_time_ms: None,
+                    execution_time_ms: 0,
+                    success: true,
+                    message: Some("Block queued".to_string()),
                 };
                 if let Err(e) = publisher.publish_blocks(&block_data).await {
                     tracing::warn!("Failed to publish block queued: {}", e);
@@ -740,12 +744,14 @@ impl BlockExecutor {
                     
                     // Publish started event
                     if let Some(publisher) = &self.publisher {
-                        let block_data = crate::BlockExecutionData {
-                            block_id,
+                        let block_data = crate::telemetry::BlockExecutionData {
+                            block_id: block_id.to_string(),
                             status: "started".to_string(),
                             command: blocks[index].to_string(),
                             timestamp: crate::json_output::current_timestamp(),
-                            execution_time_ms: None,
+                            execution_time_ms: 0,
+                            success: true,
+                            message: Some("Block started".to_string()),
                         };
                         if let Err(e) = publisher.publish_blocks(&block_data).await {
                             tracing::warn!("Failed to publish block started: {}", e);
@@ -786,12 +792,14 @@ impl BlockExecutor {
                             
                             // Publish completion event with execution time
                             if let Some(publisher) = &self.publisher {
-                                let block_data = crate::BlockExecutionData {
-                                    block_id,
+                                let block_data = crate::telemetry::BlockExecutionData {
+                                    block_id: block_id.to_string(),
                                     status: "completed".to_string(),
                                     command: blocks[index].to_string(),
                                     timestamp: crate::json_output::current_timestamp(),
-                                    execution_time_ms,
+                                    execution_time_ms: execution_time_ms.unwrap_or(0),
+                                    success: true,
+                                    message: Some("Block completed".to_string()),
                                 };
                                 if let Err(e) = publisher.publish_blocks(&block_data).await {
                                     tracing::warn!("Failed to publish block completion: {}", e);

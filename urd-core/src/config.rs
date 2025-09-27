@@ -1,8 +1,11 @@
-//! Configuration loading for UR robot
+//! Configuration loading for UR robot - IPC-agnostic version
+//! 
+//! Removes transport-specific configuration (like Zenoh) to keep
+//! the core library focused on robot control.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use crate::{Result, URError};
+use crate::error::{Result, URError};
 
 // Config is now just an alias for DaemonConfig since everything is flattened
 pub type Config = DaemonConfig;
@@ -47,12 +50,8 @@ pub struct DaemonConfig {
     pub publishing: PublishingConfig,
     pub command: CommandConfig,
     pub interpreter: Option<InterpreterConfig>,
-    pub zenoh: Option<ZenohConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ZenohConfig {
-    pub topic_prefix: String,
+    // Note: Removed zenoh config - transport-specific configuration
+    // should be handled by the transport wrapper (e.g., urd-zenoh)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -76,14 +75,17 @@ pub struct InterpreterConfig {
     pub initialization_timeout_seconds: Option<u64>,
 }
 
-// Config is now just an alias for DaemonConfig, so no separate implementation needed
-
 impl DaemonConfig {
     pub fn load_from_path(config_path: &str) -> Result<Self> {
         let contents = fs::read_to_string(config_path)
             .map_err(|e| URError::Config(format!("Failed to read {}: {}", config_path, e)))?;
         
         let config: DaemonConfig = serde_yaml::from_str(&contents)?;
+        Ok(config)
+    }
+    
+    pub fn load_from_str(config_str: &str) -> Result<Self> {
+        let config: DaemonConfig = serde_yaml::from_str(config_str)?;
         Ok(config)
     }
 }

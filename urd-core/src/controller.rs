@@ -78,9 +78,12 @@ pub struct RobotController {
 
 impl RobotController {
     /// Create a new robot controller with daemon config path
-    pub fn new_with_config(daemon_config_path: &str) -> Result<Self> {
+    pub async fn new_with_config(daemon_config_path: &str) -> Result<Self> {
         let config = DaemonConfig::load_from_path(daemon_config_path)?;
-        
+        Self::new_with_config_object(config).await
+    }
+    
+    pub async fn new_with_config_object(config: DaemonConfig) -> Result<Self> {
         Ok(Self {
             config: config.clone(),
             daemon_config: config,
@@ -238,27 +241,10 @@ impl RobotController {
         let dynamic_mode = self.daemon_config.command.stream_robot_state == "dynamic";
         let decimal_places = self.daemon_config.publishing.decimal_places.unwrap_or(4);
         
-        // Try to create MonitorOutput with Zenoh
-        if let Some(zenoh_config) = &self.daemon_config.zenoh {
-            match MonitorOutput::new_with_zenoh(pub_rate_hz, dynamic_mode, decimal_places, &zenoh_config.topic_prefix).await {
-                Ok(monitor) => {
-                    self.monitor_output = Some(monitor);
-                    info!("RTDE monitoring started with JSON output + Zenoh publishing");
-                    info!("  - Topic prefix: {}", zenoh_config.topic_prefix);
-                    info!("  - Pose topic: {}/pose", zenoh_config.topic_prefix);
-                    info!("  - State topic: {}/state", zenoh_config.topic_prefix);
-                }
-                Err(e) => {
-                    info!("Zenoh initialization failed, falling back to JSON only: {}", e);
-                    self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
-                    info!("RTDE monitoring started with JSON output only");
-                }
-            }
-        } else {
-            info!("Zenoh configuration not found in daemon config, using JSON output only");
-            self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
-            info!("RTDE monitoring started with JSON output only");
-        }
+        // Create MonitorOutput with no telemetry (transport-agnostic)
+        // Telemetry should be configured by the wrapper (e.g., urd-zenoh)
+        self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
+        info!("RTDE monitoring started with JSON output (no telemetry)");
         info!("Publication rate: {}Hz, Dynamic mode: {}", pub_rate_hz, dynamic_mode);
         Ok(())
     }
@@ -472,9 +458,26 @@ impl RobotController {
         self.clear_pending_commands_signal.store(false, Ordering::Relaxed);
     }
     
-    /// Get a clone of the Zenoh publisher for block execution debugging
-    pub fn get_zenoh_publisher(&self) -> Option<crate::ZenohPublisher> {
-        self.monitor_output.as_ref()?.get_zenoh_publisher()
+    /// Configure telemetry for the monitoring output
+    /// This allows the wrapper to inject transport-specific telemetry
+    pub fn configure_telemetry(&mut self, telemetry: Box<dyn crate::telemetry::TelemetryPublisher>) -> Result<()> {
+        if let Some(monitor_output) = &self.monitor_output {
+            // We need to replace the monitor output with one that has telemetry
+            let pub_rate_hz = self.daemon_config.publishing.pub_rate_hz;
+            let dynamic_mode = self.daemon_config.command.stream_robot_state == "dynamic";
+            let decimal_places = self.daemon_config.publishing.decimal_places.unwrap_or(4);
+            
+            self.monitor_output = Some(MonitorOutput::with_telemetry(
+                pub_rate_hz, 
+                dynamic_mode, 
+                decimal_places, 
+                telemetry
+            ));
+            info!("Telemetry configured for robot monitoring");
+            Ok(())
+        } else {
+            Err(anyhow!("Monitor output not initialized"))
+        }
     }
     
     /// Process robot state data and output JSON monitoring

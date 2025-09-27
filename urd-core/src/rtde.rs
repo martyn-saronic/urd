@@ -1,7 +1,7 @@
 //! Pure Rust implementation of the RTDE (Real-Time Data Exchange) protocol
 //! Based on Universal Robots' official RTDE specification
 
-use crate::{Result, URError};
+use crate::error::{Result, URError};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;

@@ -1,11 +1,12 @@
-//! JSON-based Robot Monitoring
+//! JSON-based Robot Monitoring - IPC-agnostic version
 //! 
 //! Provides structured JSON output for robot state monitoring with dynamic
 //! output based on change detection and publication rate limiting.
+//! Uses telemetry trait for transport-agnostic publishing.
 
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
-use crate::publisher::ZenohPublisher;
+use crate::telemetry::{TelemetryPublisher, NoOpTelemetry, PositionData as TelemetryPositionData, RobotStateData as TelemetryRobotStateData};
 
 /// Combined position monitoring data (TCP pose + joint angles)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,8 +86,21 @@ impl PositionData {
             joint_positions: rounded_joint_positions,
         }
     }
+    
+    /// Convert to telemetry format
+    pub fn to_telemetry(&self) -> TelemetryPositionData {
+        TelemetryPositionData {
+            tcp_pose: self.tcp_pose,
+            joint_positions: self.joint_positions,
+            timestamp: self.stime,
+            // These would need to be populated from robot state context
+            robot_connected: true, // TODO: Get from robot state
+            safety_stopped: false, // TODO: Get from robot state
+            emergency_stopped: false, // TODO: Get from robot state
+            protective_stopped: false, // TODO: Get from robot state
+        }
+    }
 }
-
 
 impl RobotStateData {
     pub fn new(
@@ -111,9 +125,21 @@ impl RobotStateData {
             runtime_state_name,
         }
     }
+    
+    /// Convert to telemetry format
+    pub fn to_telemetry(&self) -> TelemetryRobotStateData {
+        TelemetryRobotStateData {
+            robot_state: self.robot_mode_name.clone(),
+            safety_mode: self.safety_mode_name.clone(),
+            timestamp: self.stime,
+            robot_connected: self.robot_mode > 0, // Rough heuristic
+            program_running: self.runtime_state == 2, // PLAYING state
+        }
+    }
 }
 
 /// Monitor output manager that handles dynamic output and rate limiting
+/// Now uses telemetry trait for transport-agnostic publishing
 pub struct MonitorOutput {
     /// Last position data for change detection (TCP pose + joint positions)
     last_position: Option<([f64; 6], [f64; 6])>, // (tcp_pose, joint_positions)
@@ -129,12 +155,12 @@ pub struct MonitorOutput {
     dynamic_mode: bool,
     /// Number of decimal places for rounding
     pub decimal_places: u32,
-    /// Optional Zenoh publisher for structured data
-    zenoh_publisher: Option<ZenohPublisher>,
+    /// Telemetry publisher (trait object)
+    telemetry: Box<dyn TelemetryPublisher>,
 }
 
 impl MonitorOutput {
-    /// Create a new monitor output manager
+    /// Create a new monitor output manager with no telemetry
     pub fn new(pub_rate_hz: u32, dynamic_mode: bool, decimal_places: u32) -> Self {
         Self {
             last_position: None,
@@ -144,15 +170,13 @@ impl MonitorOutput {
             position_threshold: 0.001, // 1mm or 0.001 radians
             dynamic_mode,
             decimal_places,
-            zenoh_publisher: None,
+            telemetry: Box::new(NoOpTelemetry),
         }
     }
 
-    /// Create a new monitor output manager with Zenoh publishing
-    pub async fn new_with_zenoh(pub_rate_hz: u32, dynamic_mode: bool, decimal_places: u32, topic_prefix: &str) -> anyhow::Result<Self> {
-        let zenoh_publisher = ZenohPublisher::new(topic_prefix).await?;
-        
-        Ok(Self {
+    /// Create a new monitor output manager with custom telemetry publisher
+    pub fn with_telemetry(pub_rate_hz: u32, dynamic_mode: bool, decimal_places: u32, telemetry: Box<dyn TelemetryPublisher>) -> Self {
+        Self {
             last_position: None,
             last_robot_state: None,
             last_position_output: None,
@@ -160,8 +184,8 @@ impl MonitorOutput {
             position_threshold: 0.001, // 1mm or 0.001 radians
             dynamic_mode,
             decimal_places,
-            zenoh_publisher: Some(zenoh_publisher),
-        })
+            telemetry,
+        }
     }
     
     /// Check if combined position (TCP + joints) should be output
@@ -256,68 +280,43 @@ impl MonitorOutput {
         
         println!("{}", json);
         
-        // Also publish to Zenoh if available (spawned to keep method sync)
-        if let Some(ref zenoh_publisher) = self.zenoh_publisher {
-            let publisher = zenoh_publisher.clone();
-            let data_clone = data.clone();
-            tokio::spawn(async move {
-                if let Err(e) = publisher.publish_pose(&data_clone).await {
-                    // Log error but don't fail the whole operation
-                    tracing::debug!("Failed to publish pose to Zenoh: {}", e);
-                }
-            });
-        }
+        // Note: Telemetry publishing removed from sync method to avoid lifetime issues
+        // Use output_position_with_telemetry for async telemetry publishing
     }
     
-    /// Output combined position with Zenoh publishing (async version)
-    pub async fn output_position_with_zenoh(&self, data: &PositionData) -> anyhow::Result<()> {
+    /// Output combined position with telemetry publishing (async version)
+    pub async fn output_position_with_telemetry(&self, data: &PositionData) -> anyhow::Result<()> {
         // First do the regular JSON output
         self.output_position(data);
         
-        // Then publish to Zenoh if available
-        if let Some(ref zenoh_publisher) = self.zenoh_publisher {
-            zenoh_publisher.publish_pose(data).await?;
-        }
+        // Then publish via telemetry
+        let telemetry_data = data.to_telemetry();
+        self.telemetry.publish_pose(&telemetry_data).await?;
         
         Ok(())
     }
     
     /// Output robot state as JSON
-    /// Automatically publishes to Zenoh if available
+    /// Automatically publishes via telemetry if available
     pub fn output_robot_state(&self, data: &RobotStateData) {
         if let Ok(json) = serde_json::to_string(data) {
             println!("{}", json);
         }
         
-        // Also publish to Zenoh if available (spawned to keep method sync)
-        if let Some(ref zenoh_publisher) = self.zenoh_publisher {
-            let publisher = zenoh_publisher.clone();
-            let data_clone = data.clone();
-            tokio::spawn(async move {
-                if let Err(e) = publisher.publish_state(&data_clone).await {
-                    // Log error but don't fail the whole operation
-                    tracing::debug!("Failed to publish state to Zenoh: {}", e);
-                }
-            });
-        }
+        // Note: Telemetry publishing removed from sync method to avoid lifetime issues
+        // Use output_robot_state_with_telemetry for async telemetry publishing
     }
     
-    /// Output robot state with Zenoh publishing (async version)
-    pub async fn output_robot_state_with_zenoh(&self, data: &RobotStateData) -> anyhow::Result<()> {
+    /// Output robot state with telemetry publishing (async version)
+    pub async fn output_robot_state_with_telemetry(&self, data: &RobotStateData) -> anyhow::Result<()> {
         // First do the regular JSON output
         self.output_robot_state(data);
         
-        // Then publish to Zenoh if available
-        if let Some(ref zenoh_publisher) = self.zenoh_publisher {
-            zenoh_publisher.publish_state(data).await?;
-        }
+        // Then publish via telemetry
+        let telemetry_data = data.to_telemetry();
+        self.telemetry.publish_state(&telemetry_data).await?;
         
         Ok(())
-    }
-    
-    /// Get a clone of the Zenoh publisher for use in other components
-    pub fn get_zenoh_publisher(&self) -> Option<ZenohPublisher> {
-        self.zenoh_publisher.clone()
     }
 }
 

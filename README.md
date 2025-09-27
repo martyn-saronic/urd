@@ -1,10 +1,12 @@
 # URD - Universal Robots Daemon
 
-**Daemonic Rust interface to a Universal Robot with interpretted command streaming and RTDE monitoring.**
+**Modular Rust framework for Universal Robot control with transport-agnostic architecture.**
 
-URD is a high-performance, memory-safe daemon for Universal Robots that combines command streaming with real-time monitoring in a single binary. It provides both interpreter mode command execution and RTDE-based state monitoring.
+URD is now architected as a two-part system:
+- **urd-core**: IPC-agnostic library providing robot control functionality  
+- **urd-zenoh**: Prototype transport implementation using Zenoh middleware
 
-Rather than integrating a library into an existing program, this codebase is designed to function as a single complete daemon, which acts an interface node between other programs and the UR hardware (or simulated hardware). This is intended to be a minimal out-of-the-box "sender" to get you running whatever generated robot behavior your heart desires without having to bother with the bits and bobs of the actual robot. It is designed for scripting-style applications involving programatically generated waypoints and positional telemetry. It is not designed for complex closed-loop behaviors, nor low-latency control.
+This design allows URD's robot control capabilities to be embedded in other daemons or applications while providing a complete ready-to-use implementation via Zenoh transport for rapid integration and testing.
 
 ## Hedge
 I generated this almost 100% with Claude Code. The architecture is based on practical experience, but i do not vouch for the quality or indeed the functionality of this code beyond my own empirical testing. This deserves close examination at some point (we'll call that v1.0), but is for prototyping, non-production uses only, despite what Claude might claim elsewhere in this readme.
@@ -43,22 +45,51 @@ brew install --cask docker
 
 ## 🚀 Quick Start
 
+### URD-Zenoh (Complete Implementation)
+
 ```bash
-# Enter Nix shell with all dependencies (includes Python SDK automatically)
+# Enter urd-zenoh directory
+cd urd-zenoh
+
+# Enter Nix shell with all dependencies
 nix develop
 
-# Option 1: Stdin Interface
-urd                              # Interactive URScript commands
-cat paths/path.txt | urd         # Batch URScript execution
+# Start the Zenoh-based daemon
+urd                              # Interactive daemon with RPC services
 
-# Option 2: RPC Interface  
-urd-rpc                          # Start RPC service in background
-urd-cli command status           # Send commands via dynamic CLI
-test-urd-py                      # Test Python SDK
+# In another terminal, use CLI client
+urd_cli execute "popup('Hello')" # Execute URScript
+urd_cli command status           # Get robot status  
+urd_cli discover                 # List available services
 
 # For hardware robot, specify config:
-# urd --config config/hw_config.yaml
-# urd-rpc --config config/hw_config.yaml
+# DEFAULT_CONFIG_PATH="/path/to/config.yaml" urd
+```
+
+### URD-Core (Embedding in Your Project)
+
+```rust
+// In your Cargo.toml
+[dependencies]
+urd-core = { path = "path/to/urd-core" }
+
+// In your application
+use urd_core::{URDService, DaemonConfig};
+
+#[tokio::main]  
+async fn main() -> Result<()> {
+    let config = DaemonConfig::load_from_path("config.yaml")?;
+    let mut service = URDService::new(config).await?;
+    
+    // Add your transport layer
+    service = service.with_telemetry(Box::new(your_telemetry)).await?;
+    
+    // Use the robot interface
+    let interface = service.interface();
+    interface.send_urscript("popup('Hello from embedded URD!')").await?;
+    
+    Ok(())
+}
 ```
 
 **Python SDK Usage:**
@@ -87,95 +118,100 @@ stop-sim
 
 ## 🏗️ Architecture
 
-URD follows a modular architecture with clear separation of concerns:
+URD uses a two-tier architecture separating concerns by transport layer:
 
 ```
-┌─────────────────┐    ┌─────────────────┐
-│  Command Stream │    │  RTDE Monitor   │
-│                 │    │                 │
-│ • stdin input   │    │ • 125Hz data    │
-│ • URScript exec │    │ • State changes │
-│ • Sequential    │    │ • JSON output   │
-│ • Validation    │    │ • Rate limiting │
-└─────────────────┘    └─────────────────┘
-         │                       │
-         └───────┬───────────────┘
-                 │
-        ┌────────▼────────┐
-        │ Robot Controller│
-        │                 │
-        │ • Initialization│
-        │ • State mgmt    │
-        │ • Emergency stop│
-        │ • Coordination  │
-        └─────────────────┘
-                 │
-        ┌────────▼────────┐
-        │   UR Robot      │
-        │                 │
-        │ • Port 30001    │
-        │ • Port 30004    │
-        │ • Port 29999    │
-        └─────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    urd-zenoh                            │
+│  ┌─────────────────┐    ┌─────────────────┐           │
+│  │ Zenoh RPC       │    │ Zenoh Telemetry │           │
+│  │                 │    │                 │           │
+│  │ • urd/command   │    │ • urd/robot/*   │           │
+│  │ • urd/execute   │    │ • Structured    │           │  
+│  │ • urd/discover  │    │ • Multiple subs │           │
+│  └─────────────────┘    └─────────────────┘           │
+└─────────────────┬───────────────┬─────────────────────┘
+                  │               │
+            ┌─────▼───────────────▼─────┐
+            │       urd-core            │
+            │                           │
+            │ ┌─────────────────┐       │
+            │ │ URDInterface    │       │
+            │ │ • send_urscript │       │
+            │ │ • get_status    │       │
+            │ │ • emergency_halt│       │
+            │ └─────────────────┘       │
+            │                           │
+            │ ┌─────────────────┐       │
+            │ │ TelemetryPublisher      │
+            │ │ • publish_pose  │       │
+            │ │ • publish_state │       │
+            │ │ • publish_blocks│       │
+            │ └─────────────────┘       │
+            └─────────────┬─────────────┘
+                          │
+                 ┌────────▼────────┐
+                 │   UR Robot      │
+                 │                 │
+                 │ • Port 30001    │
+                 │ • Port 30004    │
+                 │ • Port 29999    │
+                 └─────────────────┘
 ```
 
-## 📦 Core Modules
+**Key Benefits:**
+- **urd-core**: Pure robot control logic, embeddable in any application
+- **urd-zenoh**: Complete working implementation for immediate use
+- **Transport Agnostic**: urd-core works with any IPC mechanism
+- **Trait-based**: Clean interfaces enable custom telemetry backends
 
-### `controller.rs`
-Robot lifecycle management and coordination between command streaming and monitoring.
+## 📦 Module Structure
 
-**Key Features:**
-- Complete robot initialization sequence (power on, brake release, interpreter mode)
-- Emergency abort via primary socket bypass
-- State management and error handling
-- Integration point for command streaming and monitoring
+### URD-Core (Library)
 
-### `stream.rs`
-Command streaming processor that reads URScript commands from stdin and executes them sequentially.
+**Core Robot Control:**
+- `controller.rs` - Robot lifecycle management and coordination
+- `interpreter.rs` - URScript command execution via interpreter mode
+- `rtde.rs` - Pure Rust RTDE protocol implementation  
+- `monitoring.rs` - Real-time robot state monitoring
+- `config.rs` - YAML-based configuration system
+- `service.rs` - High-level URDService wrapper for easy integration
 
-**Key Features:**
-- Sequential command execution with completion tracking
-- Real-time Ctrl+C handling for immediate robot abort
-- Buffer management (auto-clear every 500 commands)
-- JSON output for command status and completion
+**Trait Abstractions:**
+- `TelemetryPublisher` - Transport-agnostic telemetry interface
+- `URDInterface` - Core robot control API
 
-### `rtde.rs`
-Pure Rust implementation of Universal Robots' RTDE (Real-Time Data Exchange) protocol.
+**Building URD-Core:**
+```bash
+cd urd-core
+nix develop  # Pure environment, no networking dependencies
+cargo build --release
+cargo test
+```
 
-**Key Features:**
-- Binary protocol implementation (no external dependencies)
-- Support for VECTOR6D, DOUBLE, INT32, UINT32 data types
-- 125Hz data acquisition capability
-- Protocol version negotiation and recipe configuration
+### URD-Zenoh (Complete Implementation)
 
-### `monitoring.rs`
-Real-time robot state monitoring with configurable output formatting.
+**Zenoh Integration:**
+- `rpc_service.rs` - Zenoh RPC endpoint implementations
+- `telemetry.rs` - Zenoh telemetry publisher  
+- `bin/urd.rs` - Main daemon with Zenoh transport
+- `bin/urd_cli.rs` - Command-line client for RPC services
 
-**Key Features:**
-- Combined position data (TCP pose + joint positions)
-- Robot state tracking (robot mode, safety mode, runtime state)
-- Dynamic change detection (output only on significant changes)
-- Rate limiting and decimal precision control
-- JSON output with consistent formatting
+**Building URD-Zenoh:**
+```bash
+cd urd-zenoh  
+nix develop  # Includes Zenoh and networking dependencies
+cargo build --release
 
-### `interpreter.rs`
-Universal Robots interpreter mode client for validated command execution.
-
-**Key Features:**
-- Connection management to interpreter port (30020)
-- Command validation and rejection handling
-- Sequential execution tracking with completion IDs
-- Emergency abort signaling
-
-### `config.rs`
-YAML-based configuration system with unified settings.
+# Test compilation against urd-core
+cargo check
+```
 
 **Key Features:**
-- Unified single-file configuration structure
-- Command line argument and environment variable support
-- Publishing rate, monitoring mode, and precision settings  
-- Robot connection parameters and movement settings
-- Flexible configuration loading with explicit paths
+- Complete RPC service with discovery, command, and execute endpoints
+- Structured telemetry publishing to `urd/robot/*` topics
+- CLI client for remote robot control
+- Example implementation demonstrating urd-core integration
 
 ## 🔧 Configuration
 
@@ -225,19 +261,33 @@ command:
 
 ### Configuration Loading
 
-URD requires a configuration file path to be specified:
+Both urd-core and urd-zenoh use the same configuration format:
 
+**URD-Core (Library):**
+```rust
+use urd_core::{DaemonConfig, URDService};
+
+// Load from file
+let config = DaemonConfig::load_from_path("config.yaml")?;
+let service = URDService::new(config).await?;
+
+// Load from string (for embedded configs)
+let config_str = std::fs::read_to_string("config.yaml")?;
+let config = DaemonConfig::load_from_str(&config_str)?;
+```
+
+**URD-Zenoh (Daemon):**
 ```bash
-# Via command line argument (highest priority)
-urd --config path/to/config.yaml
+# Via environment variable (recommended)
+cd urd-zenoh
+DEFAULT_CONFIG_PATH="/path/to/config.yaml" urd
 
-# Via environment variable (fallback)
-export DEFAULT_CONFIG_PATH="/path/to/config.yaml"
+# Via nix develop (sets automatic default)
+nix develop  # Sets DEFAULT_CONFIG_PATH=../config/default_config.yaml  
 urd
 
-# In Nix shell (automatic default)
-nix develop  # Sets DEFAULT_CONFIG_PATH automatically
-urd
+# Check which config is being used
+urd --help  # Shows config path resolution
 ```
 
 ### Example Configurations
@@ -273,13 +323,12 @@ publishing: {pub_rate_hz: 10, decimal_places: 4}
 command: {monitor_execution: true, stream_robot_state: "dynamic"}
 ```
 
-## 🖥️ Command Line Interface
+## 🖥️ Command Line Interfaces
 
-URD provides a clean command line interface with help:
-
+### URD-Zenoh Daemon
 ```bash
 $ urd --help
-Universal Robots Daemon - Command interpreter with real-time monitoring
+Universal Robots Daemon with Zenoh transport
 
 Usage: urd [OPTIONS]
 
@@ -287,12 +336,35 @@ Options:
   -c, --config <CONFIG>  Path to the daemon configuration file
   -h, --help             Print help
   -V, --version          Print version
+
+# Configuration resolution:
+# 1. --config argument (highest priority)  
+# 2. DEFAULT_CONFIG_PATH environment variable
+# 3. config/default_config.yaml (nix develop default)
 ```
 
-Configuration path resolution follows this priority:
-1. **Command line argument** (`--config` or `-c`) - highest priority
-2. **Environment variable** (`DEFAULT_CONFIG_PATH`) - fallback
-3. **Error if neither provided** - explicit configuration required
+### URD-Zenoh CLI Client
+```bash
+$ urd_cli --help
+Universal Robots CLI via Zenoh
+
+Usage: urd_cli [OPTIONS] <COMMAND>
+
+Commands:
+  execute   Execute URScript command  
+  command   Send robot command
+  discover  Discover available services
+  status    Get robot status
+  health    Get robot health
+  pose      Get robot pose  
+  halt      Halt robot
+  reconnect Reconnect to robot
+  clear     Clear command buffer
+
+Options:
+  --json    JSON output format
+  -h, --help Print help
+```
 
 ## 📊 Monitoring Modes
 
@@ -373,75 +445,140 @@ These commands provide JSON output for monitoring and bypass the robot interpret
 
 ## 🔄 Usage Examples
 
-### Interactive Command Streaming
+### URD-Zenoh Complete System
+
+**Start daemon and send commands:**
 ```bash
-# In Nix shell (recommended)
-nix develop
-urd
+# Terminal 1: Start daemon
+cd urd-zenoh && nix develop
+DEFAULT_CONFIG_PATH="../config/default_config.yaml" urd
 
-# Or with explicit config
-urd --config config/hw_config.yaml
-
-# Type URScript commands directly:
-movej([0, -1.57, 0, -1.57, 0, 0], a=0.1, v=0.1)
-popup("Hello from robot!")
+# Terminal 2: Send commands  
+urd_cli execute "popup('Hello World!')"
+urd_cli command status
+urd_cli discover
 ```
 
-### File-based Execution
+**JSON output mode:**
 ```bash
-# Execute script file (Nix shell)
-cat paths/path.txt | urd
-
-# Or with explicit config
-cat my_script.ur | urd --config config/hw_config.yaml
-
-# Pipeline commands
-echo 'popup("Starting...")' | urd
+urd_cli --json execute "get_actual_tcp_pose()" 
+urd_cli --json command status
 ```
 
-### Configuration Options
-```bash
-# Use hardware robot config
-urd --config config/hw_config.yaml
+### URD-Core Library Integration
 
-# Use simulator config
-urd --config config/default_config.yaml
+**Basic usage:**
+```rust
+use urd_core::{URDService, DaemonConfig};
 
-# Custom config file
-urd --config /path/to/custom_config.yaml
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Load configuration
+    let config = DaemonConfig::load_from_path("../config/default_config.yaml")?;
+    
+    // Create service
+    let service = URDService::new(config).await?;
+    
+    // Get robot interface
+    let interface = service.interface();
+    
+    // Send commands
+    interface.send_urscript("popup('Hello from urd-core!')").await?;
+    interface.emergency_halt().await?;
+    
+    Ok(())
+}
+```
 
-# Environment variable (fallback)
-DEFAULT_CONFIG_PATH="/path/to/config.yaml" urd
+**With custom telemetry:**
+```rust
+use urd_core::{URDService, telemetry::TelemetryPublisher};
+use async_trait::async_trait;
+
+struct MyTelemetry;
+
+#[async_trait]
+impl TelemetryPublisher for MyTelemetry {
+    async fn publish_pose(&self, data: &PositionData) -> anyhow::Result<()> {
+        println!("Robot pose: {:?}", data.tcp_pose);
+        Ok(())
+    }
+    // ... implement other methods
+}
+
+#[tokio::main] 
+async fn main() -> anyhow::Result<()> {
+    let config = DaemonConfig::load_from_path("config.yaml")?;
+    let service = URDService::new(config).await?
+        .with_telemetry(Box::new(MyTelemetry)).await?;
+    
+    // Now robot data will be published via MyTelemetry
+    Ok(())
+}
 ```
 
 ### Development and Debugging
-```bash
-# Custom log level
-RUST_LOG=debug urd
 
-# Build and run directly
-nix develop
-cargo build --release
-./target/release/urd --config config/hw_config.yaml
+**Build each module separately:**
+```bash
+# Build and test urd-core
+cd urd-core && nix develop
+cargo build --release && cargo test
+
+# Build and test urd-zenoh
+cd ../urd-zenoh && nix develop  
+cargo build --release && cargo check
+```
+
+**Debug logging:**
+```bash
+RUST_LOG=debug urd
+RUST_LOG=trace urd_cli command status
 ```
 
 ## 🧪 Testing
 
+**URD-Core (Library):**
 ```bash
-# Enter development environment
+cd urd-core
 nix develop
 
-# Check compilation
+# Check compilation and run tests
+cargo check && cargo test
+
+# Test with different feature flags
+cargo test --all-features
+```
+
+**URD-Zenoh (Complete System):**
+```bash
+cd urd-zenoh  
+nix develop
+
+# Check compilation against urd-core
 cargo check
 
-# Run unit tests
-cargo test
-
-# Build optimized release
+# Build binaries
 cargo build --release
 
-# Run with debug logging
-RUST_LOG=debug cargo run --bin urd -- --config config/default_config.yaml
+# Test daemon startup (requires config)
+DEFAULT_CONFIG_PATH="../config/default_config.yaml" cargo run --bin urd
+
+# Test CLI client (in another terminal)
+cargo run --bin urd_cli -- discover
+```
+
+**Integration Testing:**
+```bash
+# Start simulator (optional)
+start-sim
+
+# Test complete system
+cd urd-zenoh && nix develop
+DEFAULT_CONFIG_PATH="../config/default_config.yaml" urd &
+sleep 2
+urd_cli execute "popup('Integration test')"
+urd_cli command status
 ```
 
 ## 📈 Performance
@@ -456,196 +593,160 @@ URD achieves excellent real-time performance:
 
 ## 🔗 Dependencies
 
-URD uses minimal, high-quality dependencies:
-
+**URD-Core (Minimal Library Dependencies):**
 ```toml
 [dependencies]
 tokio = { features = ["full"] }     # Async runtime
-serde = { features = ["derive"] }   # Serialization
+serde = { features = ["derive"] }   # Serialization  
 serde_yaml = "0.9"                  # YAML config parsing
-serde_json = "1.0"                  # JSON output
+serde_json = "1.0"                  # JSON serialization
 anyhow = "1.0"                      # Error handling
-thiserror = "1.0"                   # Error types
-regex = "1.0"                       # Pattern matching
+futures = "0.3"                     # Async utilities
 tracing = "0.1"                     # Structured logging
-tracing-subscriber = "0.3"          # Log formatting
-clap = { features = ["derive"] }    # Command line argument parsing
+async-trait = "0.1"                 # Trait abstractions
 ```
 
-## 🚀 Zenoh Integration
+**URD-Zenoh (Transport Dependencies):**
+```toml
+[dependencies]
+urd-core = { path = "../urd-core" } # Core library
+zenoh = "1.0"                       # Zenoh middleware
+clap = { features = ["derive"] }    # CLI argument parsing
+tracing-subscriber = "0.3"          # Log formatting
+ctrlc = "3.4"                       # Signal handling
+```
 
-URD now includes optional [Zenoh](https://zenoh.io/) middleware support for structured data publishing alongside traditional JSON output. Zenoh is a high-performance, Rust-native middleware that provides pub/sub capabilities with minimal overhead.
+**Key Benefits:**
+- **urd-core**: No networking dependencies, embeddable anywhere
+- **urd-zenoh**: Adds only Zenoh for complete transport layer
+- **Minimal footprint**: Both modules use high-quality, focused dependencies
 
-### Quick Start with Zenoh
+## 🚀 Framework Architecture Benefits
 
+The two-module architecture provides significant advantages:
+
+### ✅ **Immediate Benefits**
+
+**Embeddable Robot Control:**
+- urd-core integrates into existing applications
+- No transport dependencies to conflict with your stack
+- Clean trait-based interfaces for custom telemetry
+- Complete robot control in ~10 lines of code
+
+**Rapid Prototyping:**
+- urd-zenoh provides complete working system
+- RPC services for remote control
+- CLI client for interactive development  
+- Structured telemetry publishing
+
+**Development Flexibility:**
+- Build/test modules independently
+- urd-core works without networking
+- urd-zenoh demonstrates integration patterns
+- Separate nix environments prevent dependency conflicts
+
+### 🔮 **Future Extensibility**
+
+The architecture enables future transport implementations:
+
+**Planned Modules:**
+- `urd-grpc` - gRPC transport for enterprise integration
+- `urd-http` - REST API for web applications  
+- `urd-mqtt` - Pub/sub for IoT ecosystems
+- `urd-ros2` - ROS2 integration for robotics frameworks
+
+**Implementation Pattern:**
+```rust
+// Each transport module follows the same pattern
+use urd_core::{URDService, TelemetryPublisher};
+
+// 1. Implement TelemetryPublisher for your transport
+struct GrpcTelemetry { /* your implementation */ }
+
+// 2. Wrap urd-core with your RPC layer  
+struct GrpcService {
+    core: URDService,
+    rpc_server: GrpcServer,
+}
+
+// 3. Expose transport-specific APIs
+impl GrpcService {
+    pub async fn serve(&self) -> Result<()> {
+        // Your transport-specific serving logic
+    }
+}
+```
+
+**Key Design Principles:**
+- urd-core remains pure and embeddable
+- Each transport adds only its specific dependencies
+- Common robot control logic shared across all transports
+- Clean separation enables concurrent transport development
+
+## 📦 Nix Development Environments
+
+Each module provides its own Nix flake with tailored development environment:
+
+### URD-Core Flake
+**Pure library environment with no networking dependencies:**
 ```bash
-# Enter Nix development shell
+cd urd-core
 nix develop
 
-# Terminal 1: Start URD with Zenoh publishing
-urd-z
-
-# Terminal 2: Subscribe to robot data
-urd-zsub          # Both pose and state data
-urd-zsub pose     # Position data only  
-urd-zsub state    # Robot state only
+# Available in shell:
+# - Rust toolchain (cargo, rustc, clippy, rustfmt)
+# - Development utilities (just command runner)
+# - No zenoh, no networking libraries
+# - Perfect for embedding in other projects
 ```
 
-URD publishes structured data to two Zenoh topics:
-- **`urd/robot/pose`** - TCP pose and joint positions at configurable rate
-- **`urd/robot/state`** - Robot mode, safety mode, runtime state (on change only)
-
-### Zenoh vs JSON Output
-
-**Zenoh Benefits:**
-- Multiple consumers can subscribe independently  
-- Type-safe structured data (no JSON parsing needed)
-- Different consumers can subscribe to different data types
-- Better performance for high-frequency data
-
-**Backwards Compatibility:**
-- JSON output to stdout continues unchanged
-- Zenoh is completely optional (feature flag)
-- All existing tooling continues to work
-
-### Building with Zenoh
-
+### URD-Zenoh Flake  
+**Complete system environment with Zenoh middleware:**
 ```bash
-# Build URD with Zenoh support
-cargo build --features zenoh-integration
+cd urd-zenoh  
+nix develop
 
-# Or run directly
-cargo run --bin urd --features zenoh-integration
+# Available in shell:
+# - Everything from urd-core
+# - Zenoh CLI tools (zenohd, z_get, z_put)
+# - Networking and IPC libraries
+# - DEFAULT_CONFIG_PATH set to ../config/default_config.yaml
 
-# Build subscriber example
-cargo run --bin zenoh_subscriber --features zenoh-integration
+# Ready-to-use commands:
+urd        # Start daemon
+urd_cli    # Send commands
 ```
 
-### Future Zenoh Enhancements
+### Flake Features
+**Development Tools:**
+- Automatic Rust toolchain management
+- Pre-configured environment variables
+- Development utilities (just, cargo-watch)
+- Shell hooks for immediate productivity
 
-Phase 1 (Topic-based Publishing) is now complete. Future phases will address:
+**Isolation Benefits:**
+- urd-core: Pure environment, no transport pollution
+- urd-zenoh: Complete environment, all tools available
+- No system-wide installation required
+- Reproducible builds across machines
 
-#### Current Limitations:
-- **Mixed JSON Output**: All data (pose, state, commands) goes to stdout
-- **Command Preemption Issues**: Meta commands like `@clear` can't interrupt executing URScript
-- **No Batch Commands**: Each line processed individually, preventing intelligent buffer management
-- **Polling-based Error Handling**: Complex receipt tracking instead of direct request-response
+**Usage Patterns:**
+```bash
+# Library development (clean environment)
+cd urd-core && nix develop
+cargo test && cargo build --release
 
-#### Zenoh Solution Architecture:
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Publishers    │    │   Subscribers   │    │   Queryables    │
-│                 │    │                 │    │      (RPC)      │
-│ • urd/robot/pose│    │ • urd/cmd/urscript │ │ • urd/execute/  │
-│ • urd/robot/state│   │ • urd/cmd/meta   │    │   batch         │
-│ • Rate limited  │    │ • Prioritized    │    │ • Multi-line    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 │
-                        ┌────────▼────────┐
-                        │  Zenoh Session  │
-                        │                 │
-                        │ • Peer-to-peer  │
-                        │ • No broker req │
-                        │ • Discovery     │
-                        └─────────────────┘
+# System integration (full environment)
+cd urd-zenoh && nix develop  
+cargo build && urd &
+
+# Switch between environments as needed
+# No dependency conflicts or version issues
 ```
 
-### Three-Phase Implementation Plan
+---
 
-#### Phase 1: Topic-based Publishing (1-2 days)
-Replace stdout JSON with structured Zenoh topics:
-
-```rust
-// Current: Mixed JSON to stdout
-json_output::output::position(&position_data);
-json_output::output::robot_state(&robot_state_data);
-
-// Zenoh: Separate topics
-pose_publisher.put(pose_data).await?;
-state_publisher.put(state_data).await?;
-```
-
-**Benefits:**
-- Consumers subscribe only to needed data types
-- Different publishing rates per topic
-- Multiple consumers without stdout parsing
-- Type-safe structured data
-
-#### Phase 2: Command Stream Separation (3-5 days)
-Solve command preemption with dual subscribers:
-
-```rust
-// Current: Blocking stdin prevents @clear during execution
-line_result = reader.read_line(&mut buffer) => {
-    // Meta commands can't be processed here
-}
-
-// Zenoh: Priority-based command streams
-tokio::select! {
-    meta_cmd = meta_subscriber.recv_async() => {
-        handle_meta_command(meta_cmd).await; // Immediate
-    }
-    ur_cmd = cmd_subscriber.recv_async() => {
-        handle_urscript_command(ur_cmd).await; // Interruptible
-    }
-}
-```
-
-**Benefits:**
-- True preemption: `@clear` can interrupt any running command
-- Separate channels for different command types
-- Non-blocking architecture eliminates stdin bottleneck
-
-#### Phase 3: RPC Pattern for Batch Commands (5-8 days)
-Replace polling with direct request-response:
-
-```rust
-// Current: Fire-and-forget with polling
-json_output::output::command_sent(id, &command);
-let completed = self.wait_for_completion(id).await?; // Polling
-
-// Zenoh: RPC queryables
-let queryable = session.declare_queryable("urd/execute/batch").await?;
-while let Ok(query) = queryable.recv_async().await {
-    let commands: Vec<String> = query.parameters();
-    let result = execute_batch(commands).await?;
-    query.reply(result).await?; // Direct response
-}
-```
-
-**Benefits:**
-- **Batch Commands**: Send multiple URScript lines as one operation
-- **Buffer Control**: Client specifies when NOT to auto-clear during batch
-- **Direct Response**: Immediate success/failure, no polling
-- **Clean API**: Request-response instead of receipt tracking
-
-### Implementation Timeline
-
-```
-Week 1: Phase 1 - Topic Publishing + Testing
-Week 2: Phase 2 - Command Stream Separation  
-Week 3: Phase 3 - RPC Pattern Implementation
-Week 4: Integration Testing + Documentation
-```
-
-### Migration Strategy
-
-- **Backwards Compatibility**: Zenoh features added alongside existing functionality
-- **Feature Flags**: Enable/disable Zenoh components during development
-- **Incremental Rollout**: Each phase adds functionality without breaking existing usage
-- **Single Dependency**: Only adds `zenoh = "1.0.0"` to Cargo.toml
-
-### Expected Benefits
-
-1. **Solves Command Preemption**: Meta commands can truly interrupt URScript execution
-2. **Enables Batch Processing**: Multi-line commands with intelligent buffer management
-3. **Cleaner APIs**: Request-response instead of polling and receipt tracking
-4. **Better Scalability**: Multiple consumers, distributed deployments
-5. **Future-Proof Architecture**: Modern middleware for robot fleet management
-
-The current URD implementation provides a solid foundation - the Zenoh integration will enhance it with modern middleware patterns while preserving all existing functionality and deployment simplicity.
+*The sections below document the original single-binary implementation and are maintained for reference. The current two-module architecture (urd-core + urd-zenoh) supersedes this design while maintaining all functionality.*
 
 ## 🎯 RPC Service
 

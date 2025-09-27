@@ -1,5 +1,7 @@
 # Rust build artifacts
 /target/
+urd-core/target/
+urd-zenoh/target/
 Cargo.lock
 
 # Python
