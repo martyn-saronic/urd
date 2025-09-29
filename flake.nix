@@ -1,5 +1,5 @@
 {
-  description = "URD - Universal Robots Daemon (Modular Architecture)";
+  description = "URD Core - IPC-agnostic Universal Robots control library";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -14,6 +14,13 @@
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
+            # Rust toolchain
+            cargo
+            rustc
+            rustfmt
+            rust-analyzer
+            clippy
+            
             # Development utilities
             just
             
@@ -30,7 +37,8 @@
           ];
           
           shellHook = ''
-            echo "🤖 URD Modular Framework"
+            echo "🤖 URD Core - IPC-agnostic Universal Robots Library"
+            echo "Rust: $(rustc --version)"
             echo "Python: $(python3 --version)"
             echo "Docker: $(docker --version)"
             
@@ -40,43 +48,24 @@
             # Set up Python environment with URD SDK
             export PYTHONPATH="$REPO_ROOT:$PYTHONPATH"
             
-            # Set up a local Python environment for URD SDK
-            if [ ! -d "$REPO_ROOT/.urd_env" ]; then
-              echo "Setting up URD Python environment..."
-              python3 -m venv "$REPO_ROOT/.urd_env" >/dev/null 2>&1
-              "$REPO_ROOT/.urd_env/bin/pip" install eclipse-zenoh >/dev/null 2>&1
-              if [ $? -eq 0 ]; then
-                echo "✓ URD Python environment created with zenoh"
-              else
-                echo "⚠ Failed to create URD Python environment"
-              fi
-            fi
-            
-            # Set up Python aliases to use URD environment if available
-            if [ -f "$REPO_ROOT/.urd_env/bin/python" ]; then
-              alias python-urd="PYTHONPATH='$REPO_ROOT:\$PYTHONPATH' $REPO_ROOT/.urd_env/bin/python"
-              alias python3-urd="PYTHONPATH='$REPO_ROOT:\$PYTHONPATH' $REPO_ROOT/.urd_env/bin/python"
-              echo "✓ URD Python environment available (use python-urd or python3-urd)"
-            else
-              alias python-urd="PYTHONPATH='$REPO_ROOT:\$PYTHONPATH' python3"
-              alias python3-urd="PYTHONPATH='$REPO_ROOT:\$PYTHONPATH' python3"
-            fi
+            # Set default config path environment variable (if not already set)
+            export DEFAULT_CONFIG_PATH=''${DEFAULT_CONFIG_PATH:-"$REPO_ROOT/config/default_config.yaml"}
             
             echo ""
-            echo "📦 Modular Architecture:"
-            echo "  urd-core/     - IPC-agnostic robot control library"
-            echo "  urd-zenoh/    - Complete Zenoh-based implementation"
+            echo "📦 URD Core Library:"
+            echo "  Pure robot control functionality, no transport dependencies"
+            echo "  Can be embedded in any application or transport layer"
             echo ""
             echo "🚀 Quick Start:"
-            echo "  cd urd-zenoh && nix develop    - Complete system environment"
-            echo "  cd urd-core && nix develop     - Pure library environment"
+            echo "  cargo build         - Build URD Core library"
+            echo "  cargo test          - Run tests"
+            echo "  cargo doc --open    - View documentation"
             echo ""
             echo "🔧 Utilities:"
-            echo "  start-sim      - Start UR10e simulator"
-            echo "  stop-sim       - Stop UR10e simulator"
-            echo "  ur-init        - Power on and initialize UR robot"
-            echo "  python3-urd    - Python with URD SDK available"
-            echo "  test-urd-py    - Test URD Python SDK"
+            echo "  start-sim           - Start UR10e simulator" 
+            echo "  stop-sim            - Stop UR10e simulator"
+            echo "  ur-init             - Power on and initialize UR robot"
+            echo "  test-urd-py         - Test URD Python SDK"
             echo ""
             
             # Create shell aliases for convenience
@@ -113,7 +102,7 @@
 import urd_py
 print('✓ URD Python SDK version:', urd_py.__version__)
 print('Available classes:', [name for name in dir(urd_py) if not name.startswith('_')])
-print('To test with URD daemon, run: cd urd-zenoh && nix develop && urd')
+print('URD Core library is available for embedding in transport layers')
 "
               fi
             }
