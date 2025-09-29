@@ -14,33 +14,33 @@ categories = ["api-bindings", "network-programming"]
 urd-core = { path = "../urd-core" }
 
 # Zenoh transport
-zenoh = { version = "=1.4", features = ["stats", "unstable"] }
+zenoh = { workspace = true }
 
 # Core async runtime
-tokio = { version = "1.0", features = ["full"] }
+tokio = { workspace = true }
 
 # Serialization  
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 
 # Error handling
-anyhow = "1.0"
-thiserror = "1.0"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Utilities
-tracing = "0.1"
-tracing-subscriber = "0.3"
-clap = { version = "4.0", features = ["derive"] }
-chrono = "0.4"
-uuid = { version = "1.0", features = ["v4"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
 
 # Async utilities
-async-trait = "0.1"
-futures = "0.3"
+async-trait = { workspace = true }
+futures = { workspace = true }
 
 # Signal handling
-ctrlc = "3.0"
+ctrlc = { workspace = true }
 
 [features]
 default = []

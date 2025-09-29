@@ -2,7 +2,10 @@
 /target/
 urd-core/target/
 urd-zenoh/target/
-Cargo.lock
+# Note: Root workspace Cargo.lock should be committed
+# Individual crate Cargo.lock files should be ignored
+urd-core/Cargo.lock
+urd-zenoh/Cargo.lock
 
 # Python
 __pycache__/

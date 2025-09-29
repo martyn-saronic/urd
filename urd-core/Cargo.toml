@@ -11,27 +11,27 @@ categories = ["embedded", "api-bindings"]
 
 [dependencies]
 # Core async runtime
-tokio = { version = "1.0", features = ["full"] }
+tokio = { workspace = true }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 
 # Error handling
-anyhow = "1.0"
-thiserror = "1.0"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Utilities
-regex = "1.0"
-chrono = "0.4"
-tracing = "0.1"
-uuid = { version = "1.0", features = ["v4"] }
+regex = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
 
 # Async utilities
-async-trait = "0.1"
-crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
-futures = "0.3"
+async-trait = { workspace = true }
+crossbeam = { workspace = true }
+futures = { workspace = true }
 
 # NOTE: No zenoh, no networking dependencies!
 # This library is pure robot control logic
