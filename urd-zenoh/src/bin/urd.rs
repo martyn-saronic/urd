@@ -6,7 +6,7 @@ use urd_zenoh::{URDService, ZenohTelemetry, ZenohRpcService, DaemonConfig};
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use tracing::{info, error};
+use tracing::info;
 use tracing_subscriber;
 
 #[derive(Parser)]
@@ -31,7 +31,7 @@ impl Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
-    tracing_subscriber::init();
+    tracing_subscriber::fmt::init();
     
     let args = Args::parse();
     let config_path = args.get_config_path();

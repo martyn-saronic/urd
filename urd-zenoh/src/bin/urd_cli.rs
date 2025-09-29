@@ -58,14 +58,14 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::init();
+    tracing_subscriber::fmt::init();
     
     let args = Args::parse();
     
     // Connect to Zenoh
     let session = zenoh::open(zenoh::Config::default())
         .await
-        .context("Failed to connect to Zenoh network")?;
+        .map_err(|e| anyhow::anyhow!("Failed to connect to Zenoh network: {}", e))?;
     
     // Execute command
     match &args.command {
@@ -114,7 +114,7 @@ async fn execute_urscript(session: &Session, urscript: &str, group: bool, json_o
         .payload(request_json)
         .timeout(std::time::Duration::from_secs(30))
         .await
-        .context("Failed to send execute request")?;
+        .map_err(|e| anyhow::anyhow!("Failed to send execute request: {}", e))?;
     
     for reply in replies {
         if let Ok(reply) = reply.into_result() {
@@ -156,7 +156,7 @@ async fn send_command(session: &Session, command_type: &str, timeout: Option<u32
         .payload(request_json)
         .timeout(std::time::Duration::from_secs(30))
         .await
-        .context("Failed to send command request")?;
+        .map_err(|e| anyhow::anyhow!("Failed to send command request: {}", e))?;
     
     for reply in replies {
         if let Ok(reply) = reply.into_result() {
@@ -188,7 +188,7 @@ async fn discover_services(session: &Session, json_output: bool) -> Result<()> {
     let replies = session.get("urd/discover")
         .timeout(std::time::Duration::from_secs(5))
         .await
-        .context("Failed to send discovery request")?;
+        .map_err(|e| anyhow::anyhow!("Failed to send discovery request: {}", e))?;
     
     for reply in replies {
         if let Ok(reply) = reply.into_result() {

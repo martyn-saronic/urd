@@ -2,7 +2,7 @@
 //! 
 //! Provides Zenoh RPC transport layer over URD Core functionality
 
-use urd_core::{URDService, Result as URDResult, URError};
+use urd_core::URDService;
 use zenoh::{Session, handlers::{RingChannel, RingChannelHandler}, query::{Query, Queryable}};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -169,11 +169,15 @@ impl ZenohRpcService {
         
         while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
             match queryable.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(query) => {
+                Ok(Some(query)) => {
                     let urd = urd_service.clone();
                     tokio::spawn(async move {
                         Self::process_command_query(query, urd).await;
                     });
+                }
+                Ok(None) => {
+                    // No query received, continue loop
+                    continue;
                 }
                 Err(_) => {
                     // Timeout or error, continue loop to check shutdown
@@ -195,11 +199,15 @@ impl ZenohRpcService {
         
         while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
             match queryable.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(query) => {
+                Ok(Some(query)) => {
                     let urd = urd_service.clone();
                     tokio::spawn(async move {
                         Self::process_urscript_query(query, urd).await;
                     });
+                }
+                Ok(None) => {
+                    // No query received, continue loop
+                    continue;
                 }
                 Err(_) => {
                     // Timeout or error, continue loop to check shutdown
@@ -220,10 +228,14 @@ impl ZenohRpcService {
         
         while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
             match queryable.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(query) => {
+                Ok(Some(query)) => {
                     tokio::spawn(async move {
                         Self::process_discovery_query(query).await;
                     });
+                }
+                Ok(None) => {
+                    // No query received, continue loop
+                    continue;
                 }
                 Err(_) => {
                     // Timeout or error, continue loop to check shutdown
@@ -328,14 +340,40 @@ impl ZenohRpcService {
         // Send response
         match result {
             Ok(exec_result) => {
+                let (success, message, data) = match exec_result {
+                    urd_core::CommandExecutionResult::URScript(ur_result) => {
+                        let success = matches!(ur_result.status, urd_core::URScriptStatus::Completed);
+                        let message = format!("URScript {} - Status: {:?}", 
+                            if success { "completed" } else { "failed" }, 
+                            ur_result.status);
+                        let data = serde_json::json!({
+                            "id": ur_result.id,
+                            "urscript": ur_result.urscript,
+                            "status": ur_result.status,
+                            "termination_id": ur_result.termination_id
+                        });
+                        (success, message, Some(data))
+                    }
+                    urd_core::CommandExecutionResult::Command(cmd_result) => {
+                        let success = matches!(cmd_result.status, urd_core::BlockCommandStatus::Completed);
+                        let message = format!("Command {} - Status: {:?}", 
+                            if success { "completed" } else { "failed" }, 
+                            cmd_result.status);
+                        let data = serde_json::json!({
+                            "command": cmd_result.command,
+                            "status": cmd_result.status,
+                            "data": cmd_result.data
+                        });
+                        (success, message, Some(data))
+                    }
+                };
+                
                 let response = RpcResponse {
                     command_type: "execute".to_string(),
-                    success: exec_result.success,
-                    message: exec_result.message,
+                    success,
+                    message,
                     duration_ms: duration,
-                    data: Some(serde_json::json!({
-                        "blocks_executed": exec_result.blocks_executed
-                    })),
+                    data,
                 };
                 Self::reply_success(&query, response).await;
             }

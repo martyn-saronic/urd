@@ -7,7 +7,6 @@ use anyhow::Result;
 use tracing::{error, debug};
 
 /// Zenoh telemetry publisher that publishes robot data to Zenoh topics
-#[derive(Clone)]
 pub struct ZenohTelemetry {
     session: Session,
     pose_publisher: Publisher<'static>,

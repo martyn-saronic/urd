@@ -19,7 +19,7 @@ use uuid::Uuid;
 const CLEAR_BUFFER_LIMIT: u32 = 500;
 
 /// Status of URScript execution
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum URScriptStatus {
     Sent,
     Completed,
@@ -27,7 +27,7 @@ pub enum URScriptStatus {
 }
 
 /// Status of high-level command execution
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandStatus {
     Completed,
     Failed(String),
