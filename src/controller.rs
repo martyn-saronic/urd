@@ -13,6 +13,7 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 use tracing::{info, error};
 
@@ -71,6 +72,8 @@ pub struct RobotController {
     monitor_output: Option<MonitorOutput>,
     state: RobotState,
     robot_status: RobotStatus,
+    /// Signal for stream processor to clear its pending commands buffer
+    clear_pending_commands_signal: Arc<AtomicBool>,
 }
 
 impl RobotController {
@@ -88,6 +91,7 @@ impl RobotController {
             monitor_output: None,
             state: RobotState::Disconnected,
             robot_status: RobotStatus::default(),
+            clear_pending_commands_signal: Arc::new(AtomicBool::new(false)),
         })
     }
     
@@ -229,14 +233,32 @@ impl RobotController {
         let rtde_client = RTDEClient::new(&self.config.robot.host, 30004)?;
         self.rtde_monitor = Some(rtde_client);
         
-        // Initialize JSON monitor output
+        // Initialize JSON monitor output (with optional Zenoh)
         let pub_rate_hz = self.daemon_config.publishing.pub_rate_hz;
         let dynamic_mode = self.daemon_config.command.stream_robot_state == "dynamic";
         let decimal_places = self.daemon_config.publishing.decimal_places.unwrap_or(4);
         
-        self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
-        
-        info!("RTDE monitoring started with JSON output");
+        // Try to create MonitorOutput with Zenoh
+        if let Some(zenoh_config) = &self.daemon_config.zenoh {
+            match MonitorOutput::new_with_zenoh(pub_rate_hz, dynamic_mode, decimal_places, &zenoh_config.topic_prefix).await {
+                Ok(monitor) => {
+                    self.monitor_output = Some(monitor);
+                    info!("RTDE monitoring started with JSON output + Zenoh publishing");
+                    info!("  - Topic prefix: {}", zenoh_config.topic_prefix);
+                    info!("  - Pose topic: {}/pose", zenoh_config.topic_prefix);
+                    info!("  - State topic: {}/state", zenoh_config.topic_prefix);
+                }
+                Err(e) => {
+                    info!("Zenoh initialization failed, falling back to JSON only: {}", e);
+                    self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
+                    info!("RTDE monitoring started with JSON output only");
+                }
+            }
+        } else {
+            info!("Zenoh configuration not found in daemon config, using JSON output only");
+            self.monitor_output = Some(MonitorOutput::new(pub_rate_hz, dynamic_mode, decimal_places));
+            info!("RTDE monitoring started with JSON output only");
+        }
         info!("Publication rate: {}Hz, Dynamic mode: {}", pub_rate_hz, dynamic_mode);
         Ok(())
     }
@@ -374,6 +396,7 @@ impl RobotController {
 
     /// Send immediate abort through primary socket (bypasses interpreter queue)
     /// This should be faster than sending abort through the interpreter
+    /// WARNING: This shuts down the entire daemon - use rpc_abort() for RPC calls
     pub fn emergency_abort(&mut self) -> Result<()> {
         if let Some(primary_socket) = &mut self.primary_socket {
             info!("Sending emergency abort through primary socket");
@@ -399,6 +422,59 @@ impl RobotController {
         } else {
             Err(anyhow!("Primary socket not connected"))
         }
+    }
+    
+    /// RPC abort - sends halt command through primary socket WITHOUT shutting down daemon
+    /// This is for RPC calls that want to stop motion but keep the daemon running
+    pub fn rpc_abort(&mut self) -> Result<()> {
+        if let Some(primary_socket) = &mut self.primary_socket {
+            info!("Sending RPC abort through primary socket");
+            
+            // Send abort command directly to primary socket
+            let abort_script = "halt\n";
+            
+            primary_socket.write_all(abort_script.as_bytes())
+                .context("Failed to send RPC abort to primary socket")?;
+            
+            info!("RPC abort sent through primary socket");
+            
+            // Clear the interpreter buffer so commands don't resume after reconnect
+            if let Some(interpreter) = &mut self.interpreter {
+                match interpreter.clear() {
+                    Ok(_) => info!("Interpreter buffer cleared after abort"),
+                    Err(e) => info!("Failed to clear interpreter buffer after abort: {}", e),
+                }
+            }
+            
+            // NOTE: We do NOT call interpreter.signal_emergency_abort() here because
+            // that would shut down the command stream. For RPC abort, we only want
+            // to halt robot motion and clear buffer, not terminate the daemon.
+            
+            Ok(())
+        } else {
+            Err(anyhow!("Primary socket not connected"))
+        }
+    }
+    
+    /// Get the clear pending commands signal for monitoring by stream processor
+    pub fn get_clear_pending_commands_signal(&self) -> Arc<AtomicBool> {
+        self.clear_pending_commands_signal.clone()
+    }
+    
+    /// Signal the stream processor to clear its pending commands buffer
+    pub fn signal_clear_pending_commands(&self) {
+        info!("Signaling stream processor to clear pending commands");
+        self.clear_pending_commands_signal.store(true, Ordering::Relaxed);
+    }
+    
+    /// Reset the clear pending commands signal (called by stream processor after clearing)
+    pub fn reset_clear_pending_commands_signal(&self) {
+        self.clear_pending_commands_signal.store(false, Ordering::Relaxed);
+    }
+    
+    /// Get a clone of the Zenoh publisher for block execution debugging
+    pub fn get_zenoh_publisher(&self) -> Option<crate::ZenohPublisher> {
+        self.monitor_output.as_ref()?.get_zenoh_publisher()
     }
     
     /// Process robot state data and output JSON monitoring

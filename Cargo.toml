@@ -15,6 +15,20 @@ serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 clap = { version = "4.0", features = ["derive"] }
+chrono = "0.4"
+zenoh = { version = "=1.4", features = ["stats", "unstable"] }
+uuid = { version = "1.0", features = ["v4"] }
+# Additional dependencies for zenoh integration (following libio pattern)
+async-trait = "0.1"
+crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
+futures = "0.3"
+serde_cbor = "0.11"
+uhlc = "0.8"
+urlencoding = "2.1"
+ctrlc = "3.0"
+
+[features]
+default = []
 
 [lib]
 name = "urd"
@@ -23,3 +37,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "urd"
 path = "src/bin/urd.rs"
+
+[[bin]]
+name = "urd_cli"
+path = "src/bin/urd_cli.rs"

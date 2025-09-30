@@ -47,6 +47,12 @@ pub struct DaemonConfig {
     pub publishing: PublishingConfig,
     pub command: CommandConfig,
     pub interpreter: Option<InterpreterConfig>,
+    pub zenoh: Option<ZenohConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ZenohConfig {
+    pub topic_prefix: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -44,18 +44,30 @@ brew install --cask docker
 ## 🚀 Quick Start
 
 ```bash
-# Enter Nix shell with all dependencies
+# Enter Nix shell with all dependencies (includes Python SDK automatically)
 nix develop
 
-# Run the daemon (uses default simulator config)
-urd
+# Option 1: Stdin Interface
+urd                              # Interactive URScript commands
+cat paths/path.txt | urd         # Batch URScript execution
+
+# Option 2: RPC Interface  
+urd-rpc                          # Start RPC service in background
+urd-cli command status           # Send commands via dynamic CLI
+test-urd-py                      # Test Python SDK
 
 # For hardware robot, specify config:
 # urd --config config/hw_config.yaml
+# urd-rpc --config config/hw_config.yaml
+```
 
-# alternatively: pipe a urscript into the daemon
-cat paths/path.txt | urd
+**Python SDK Usage:**
+```python
+import urd_py
 
+with urd_py.Client() as bot:
+    bot.command("@status")
+    bot.execute("popup('Hello from Python!')")
 ```
 
 ### Optional: Robot Simulation
@@ -459,3 +471,357 @@ tracing = "0.1"                     # Structured logging
 tracing-subscriber = "0.3"          # Log formatting
 clap = { features = ["derive"] }    # Command line argument parsing
 ```
+
+## 🚀 Zenoh Integration
+
+URD now includes optional [Zenoh](https://zenoh.io/) middleware support for structured data publishing alongside traditional JSON output. Zenoh is a high-performance, Rust-native middleware that provides pub/sub capabilities with minimal overhead.
+
+### Quick Start with Zenoh
+
+```bash
+# Enter Nix development shell
+nix develop
+
+# Terminal 1: Start URD with Zenoh publishing
+urd-z
+
+# Terminal 2: Subscribe to robot data
+urd-zsub          # Both pose and state data
+urd-zsub pose     # Position data only  
+urd-zsub state    # Robot state only
+```
+
+URD publishes structured data to two Zenoh topics:
+- **`urd/robot/pose`** - TCP pose and joint positions at configurable rate
+- **`urd/robot/state`** - Robot mode, safety mode, runtime state (on change only)
+
+### Zenoh vs JSON Output
+
+**Zenoh Benefits:**
+- Multiple consumers can subscribe independently  
+- Type-safe structured data (no JSON parsing needed)
+- Different consumers can subscribe to different data types
+- Better performance for high-frequency data
+
+**Backwards Compatibility:**
+- JSON output to stdout continues unchanged
+- Zenoh is completely optional (feature flag)
+- All existing tooling continues to work
+
+### Building with Zenoh
+
+```bash
+# Build URD with Zenoh support
+cargo build --features zenoh-integration
+
+# Or run directly
+cargo run --bin urd --features zenoh-integration
+
+# Build subscriber example
+cargo run --bin zenoh_subscriber --features zenoh-integration
+```
+
+### Future Zenoh Enhancements
+
+Phase 1 (Topic-based Publishing) is now complete. Future phases will address:
+
+#### Current Limitations:
+- **Mixed JSON Output**: All data (pose, state, commands) goes to stdout
+- **Command Preemption Issues**: Meta commands like `@clear` can't interrupt executing URScript
+- **No Batch Commands**: Each line processed individually, preventing intelligent buffer management
+- **Polling-based Error Handling**: Complex receipt tracking instead of direct request-response
+
+#### Zenoh Solution Architecture:
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Publishers    │    │   Subscribers   │    │   Queryables    │
+│                 │    │                 │    │      (RPC)      │
+│ • urd/robot/pose│    │ • urd/cmd/urscript │ │ • urd/execute/  │
+│ • urd/robot/state│   │ • urd/cmd/meta   │    │   batch         │
+│ • Rate limited  │    │ • Prioritized    │    │ • Multi-line    │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         └───────────────────────┼───────────────────────┘
+                                 │
+                        ┌────────▼────────┐
+                        │  Zenoh Session  │
+                        │                 │
+                        │ • Peer-to-peer  │
+                        │ • No broker req │
+                        │ • Discovery     │
+                        └─────────────────┘
+```
+
+### Three-Phase Implementation Plan
+
+#### Phase 1: Topic-based Publishing (1-2 days)
+Replace stdout JSON with structured Zenoh topics:
+
+```rust
+// Current: Mixed JSON to stdout
+json_output::output::position(&position_data);
+json_output::output::robot_state(&robot_state_data);
+
+// Zenoh: Separate topics
+pose_publisher.put(pose_data).await?;
+state_publisher.put(state_data).await?;
+```
+
+**Benefits:**
+- Consumers subscribe only to needed data types
+- Different publishing rates per topic
+- Multiple consumers without stdout parsing
+- Type-safe structured data
+
+#### Phase 2: Command Stream Separation (3-5 days)
+Solve command preemption with dual subscribers:
+
+```rust
+// Current: Blocking stdin prevents @clear during execution
+line_result = reader.read_line(&mut buffer) => {
+    // Meta commands can't be processed here
+}
+
+// Zenoh: Priority-based command streams
+tokio::select! {
+    meta_cmd = meta_subscriber.recv_async() => {
+        handle_meta_command(meta_cmd).await; // Immediate
+    }
+    ur_cmd = cmd_subscriber.recv_async() => {
+        handle_urscript_command(ur_cmd).await; // Interruptible
+    }
+}
+```
+
+**Benefits:**
+- True preemption: `@clear` can interrupt any running command
+- Separate channels for different command types
+- Non-blocking architecture eliminates stdin bottleneck
+
+#### Phase 3: RPC Pattern for Batch Commands (5-8 days)
+Replace polling with direct request-response:
+
+```rust
+// Current: Fire-and-forget with polling
+json_output::output::command_sent(id, &command);
+let completed = self.wait_for_completion(id).await?; // Polling
+
+// Zenoh: RPC queryables
+let queryable = session.declare_queryable("urd/execute/batch").await?;
+while let Ok(query) = queryable.recv_async().await {
+    let commands: Vec<String> = query.parameters();
+    let result = execute_batch(commands).await?;
+    query.reply(result).await?; // Direct response
+}
+```
+
+**Benefits:**
+- **Batch Commands**: Send multiple URScript lines as one operation
+- **Buffer Control**: Client specifies when NOT to auto-clear during batch
+- **Direct Response**: Immediate success/failure, no polling
+- **Clean API**: Request-response instead of receipt tracking
+
+### Implementation Timeline
+
+```
+Week 1: Phase 1 - Topic Publishing + Testing
+Week 2: Phase 2 - Command Stream Separation  
+Week 3: Phase 3 - RPC Pattern Implementation
+Week 4: Integration Testing + Documentation
+```
+
+### Migration Strategy
+
+- **Backwards Compatibility**: Zenoh features added alongside existing functionality
+- **Feature Flags**: Enable/disable Zenoh components during development
+- **Incremental Rollout**: Each phase adds functionality without breaking existing usage
+- **Single Dependency**: Only adds `zenoh = "1.0.0"` to Cargo.toml
+
+### Expected Benefits
+
+1. **Solves Command Preemption**: Meta commands can truly interrupt URScript execution
+2. **Enables Batch Processing**: Multi-line commands with intelligent buffer management
+3. **Cleaner APIs**: Request-response instead of polling and receipt tracking
+4. **Better Scalability**: Multiple consumers, distributed deployments
+5. **Future-Proof Architecture**: Modern middleware for robot fleet management
+
+The current URD implementation provides a solid foundation - the Zenoh integration will enhance it with modern middleware patterns while preserving all existing functionality and deployment simplicity.
+
+## 🎯 RPC Service
+
+URD now includes a Zenoh-based RPC service for programmatic robot control. The RPC service enables remote command execution with request-response semantics, complementing the existing stdin command interface.
+
+### Quick Start with RPC
+
+```bash
+# Terminal 1: Start URD with RPC service enabled
+urd-z  # Automatically includes --enable-rpc
+
+# Terminal 2: Send emergency abort command
+urd-abort -v -t 3
+```
+
+### Available RPC Commands
+
+#### Emergency Abort
+
+Send immediate emergency abort to halt all robot motion:
+
+```bash
+# Basic abort (5 second timeout)
+urd-abort
+
+# Abort with custom timeout (1-10 seconds)
+urd-abort --timeout 3
+
+# Verbose output with timing information
+urd-abort --verbose --timing
+
+# JSON output for programmatic use
+urd-abort --format json
+
+# Compact output for scripts
+urd-abort --format compact
+```
+
+**Command Format:**
+- **Topic**: `urd/command`
+- **Request**: `{"command_type": "abort", "timeout_secs": 5, "parameters": null}`
+- **Response**: `{"command_type": "abort", "success": true, "message": "...", "duration_ms": 147, "data": {...}}`
+
+### RPC vs. stdin Interface
+
+**RPC Service Benefits:**
+- **Non-blocking**: Multiple clients can send commands concurrently
+- **Request-response**: Immediate success/failure feedback without polling
+- **Typed commands**: Structured JSON payloads with validation
+- **Remote access**: Network-accessible for distributed systems
+- **Programmatic**: Easy integration with other services and languages
+
+**stdin Interface Benefits:**
+- **Interactive**: Real-time command input during development
+- **Simple**: Direct URScript command entry
+- **Familiar**: Standard Unix pipeline pattern
+- **Immediate**: No network overhead for local development
+
+**Both interfaces work simultaneously** - you can use stdin for interactive development and RPC for automated control.
+
+### RPC Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   RPC Clients   │    │   urd/command   │    │  RPC Handlers   │
+│                 │    │     (Topic)     │    │                 │
+│ • urd-abort     │───▶│ • Query/Reply   │───▶│ • abort         │
+│ • Custom tools  │    │ • Blocking      │    │ • execute*      │
+│ • Other langs   │    │ • Validated     │    │ • status*       │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+*Future commands planned for Phase 3.2
+
+### Integration Examples
+
+**Shell Scripts:**
+```bash
+#!/bin/bash
+# Robot safety script
+if ! urd-abort --timeout 2; then
+    echo "Emergency abort failed!"
+    exit 1
+fi
+echo "Robot safely stopped"
+```
+
+**Python SDK (Recommended):**
+```python
+import urd_py
+
+# Simple robot control
+with urd_py.Client() as bot:
+    bot.command("@reconnect")           # Reconnect robot
+    status = bot.command("@status")     # Get robot status
+    bot.execute("popup('Hello!')")      # Execute URScript
+    
+    # Move robot
+    pose = [0, -1.57, 0, -1.57, 0, 0]
+    result = bot.execute(f"movej({pose}, a=0.1, v=0.1)")
+    if result.success:
+        print(f"Movement completed in {result.duration_ms}ms")
+
+def emergency_stop():
+    """Emergency stop using Python SDK"""
+    try:
+        with urd_py.Client() as bot:
+            result = bot.command("@halt")
+            return result.success
+    except urd_py.URDConnectionError:
+        return False
+```
+
+**Python Integration (Legacy - subprocess):**
+```python
+import subprocess
+import json
+
+def emergency_stop():
+    result = subprocess.run(['urd-cli', 'command', 'halt'], 
+                          capture_output=True, text=True)
+    return result.returncode == 0
+```
+
+**From Other Languages:**
+Any language can send Zenoh queries to `urd/command` topic with appropriate JSON payloads.
+
+### Error Handling
+
+The `urd-abort` command provides comprehensive error handling:
+
+- **Exit Code 0**: Abort successful
+- **Exit Code 1**: Abort failed (robot-level failure)  
+- **Exit Code 2**: Invalid response from RPC service
+- **Exit Code 3**: Network/communication failure
+- **Exit Code 4**: No response from RPC service (URD not running)
+
+## 🏗️ RPC Architecture & Development Roadmap
+
+### Current Implementation Status (Phase 3.2 ✅)
+
+**Non-blocking Command Architecture** - Commands are classified by blocking behavior:
+- **Emergency**: `halt` - Always available, interrupts execution
+- **Query**: `status`, `health`, `pose` - Bypass BlockExecutor, always available  
+- **Meta**: `reconnect`, `clear`, `help` - Use BlockExecutor, throw if busy
+- **Execution**: `execute` - Mutually exclusive, throw if busy
+
+### Architecture TODOs
+
+#### High Priority
+- [ ] **Pose Command Implementation** - Return actual TCP position from RTDE monitoring
+- [ ] **Advanced Health Diagnostics** - Include robot mode, safety status, joint states
+- [ ] **Execution Queue Management** - Multiple queued executions with priorities
+- [ ] **Program Flow Control** - Pause/resume functionality for long-running programs
+- [ ] **Async Execution Results** - Non-blocking execute with completion callbacks
+
+#### Medium Priority  
+- [ ] **Service Discovery Enhancements** - Schema versioning and capability negotiation
+- [ ] **Command History & Replay** - Store and replay command sequences
+- [ ] **Performance Metrics** - Latency tracking and throughput optimization
+- [ ] **Configuration Hot-reload** - Runtime config updates without restart
+- [ ] **Multi-robot Support** - Single daemon managing multiple robot instances
+
+#### Low Priority
+- [ ] **Plugin Architecture** - Custom command extension system
+- [ ] **Web Dashboard** - HTTP interface for monitoring and basic control
+- [ ] **GraphQL API** - Alternative query interface for complex operations
+- [ ] **Command Templating** - Parameterized URScript templates
+- [ ] **Simulation Integration** - Seamless sim-to-real deployment
+
+### Technical Debt
+- [ ] **Remove deprecated `stream` module** - Replace with `StdinInterface`
+- [ ] **Consolidate error types** - Unified error handling across modules  
+- [ ] **Memory optimization** - Reduce allocations in hot paths
+- [ ] **Test coverage** - Unit tests for all RPC command handlers
+- [ ] **Documentation** - API docs and architecture guides
+
+### Implementation Notes
+All RPC commands follow the `urd/command` topic pattern with typed JSON payloads. The architecture maintains backward compatibility while supporting extensible command types and behaviors.
