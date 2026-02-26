@@ -20,43 +20,51 @@
             rustfmt
             rust-analyzer
             clippy
-            
+
+            # Python environment
+            (python3.withPackages (ps: with ps; [
+              pip
+              setuptools
+              wheel
+            ]))
+
+            # MQTT tooling
+            mosquitto
+
             # Docker tools
             docker
             docker-compose
           ];
           
           shellHook = ''
-            echo "🤖 UR10e Development Environment"
+            echo "URD Development Environment"
             echo "Rust: $(rustc --version)"
-            echo "Docker: $(docker --version)"
-            echo "Available: Rust toolchain, Docker"
+            echo "Python: $(python3 --version)"
+
+            REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+            export PYTHONPATH="$REPO_ROOT:$PYTHONPATH"
+            export DEFAULT_CONFIG_PATH=''${DEFAULT_CONFIG_PATH:-"$REPO_ROOT/config/default_config.yaml"}
+
             echo ""
             echo "Commands:"
-            echo "  start-sim      - Start UR10e simulator"
-            echo "  stop-sim       - Stop UR10e simulator"
-            echo "  ur-init        - Power on and initialize UR robot"
-            echo "  urd            - Universal Robots daemon - command interpreter (Rust)"
-            echo "  cargo build    - Build Rust workspace"
+            echo "  start-sim   - Start UR10e simulator (Docker)"
+            echo "  stop-sim    - Stop simulator"
+            echo "  ur-init     - Power on and initialize robot"
+            echo "  urd         - Run the URD daemon"
+            echo "  cargo build - Build"
             echo ""
-            
-            # Create shell aliases for convenience
-            # Get the repository root directory
-            REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-            
-            # Set default config path environment variable (if not already set)
-            export DEFAULT_CONFIG_PATH=''${DEFAULT_CONFIG_PATH:-"$REPO_ROOT/config/default_config.yaml"}
-            
+
             alias start-sim="$REPO_ROOT/scripts/start-sim.sh"
             alias stop-sim="$REPO_ROOT/scripts/stop-sim.sh"
             alias ur-init="$REPO_ROOT/scripts/ur-init.sh"
-            
-            # Function to handle urd with arguments
+
             urd() {
               if [ -f "$REPO_ROOT/target/release/urd" ]; then
                 "$REPO_ROOT/target/release/urd" "$@"
+              elif [ -f "$REPO_ROOT/target/debug/urd" ]; then
+                "$REPO_ROOT/target/debug/urd" "$@"
               else
-                (cd "$REPO_ROOT" && cargo build --release --bin urd && "$REPO_ROOT/target/release/urd" "$@")
+                (cd "$REPO_ROOT" && cargo build --bin urd && "$REPO_ROOT/target/debug/urd" "$@")
               fi
             }
           '';

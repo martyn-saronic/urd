@@ -46,3 +46,11 @@ command:
   # Stream robot state output while processing commands
   # Options: false (disabled), true (continuous), "dynamic" (only on change)
   stream_robot_state: "dynamic"
+
+# MQTT Configuration (optional - enables MQTT pub/sub interface alongside stdin)
+# Uncomment to enable:
+# mqtt:
+#   broker_host: "localhost"
+#   broker_port: 1883
+#   topic_prefix: "arm"    # subscribes arm/cmd/*, publishes arm/state/*
+#   publish_rate_hz: 25

@@ -9,10 +9,12 @@ pub mod error;
 pub mod interpreter;
 pub mod json_output;
 pub mod monitoring;
+pub mod mqtt;
 pub mod rtde;
 pub mod stream;
 
-pub use config::{Config, DaemonConfig, InterpreterConfig};
+pub use config::{Config, DaemonConfig, InterpreterConfig, MqttConfig};
+pub use mqtt::MqttInterface;
 pub use controller::{RobotController, RobotState as ControllerRobotState};
 pub use error::{Result, URError};
 pub use interpreter::{InterpreterClient, CommandResult};

@@ -14,6 +14,7 @@ use anyhow::{anyhow, Context, Result};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
+use tokio::sync::watch;
 use tracing::{info, error};
 
 /// Robot operational states
@@ -71,13 +72,16 @@ pub struct RobotController {
     monitor_output: Option<MonitorOutput>,
     state: RobotState,
     robot_status: RobotStatus,
+    /// Watch channel sender — updated each RTDE cycle for MQTT state publisher
+    state_tx: watch::Sender<Option<RobotStatus>>,
 }
 
 impl RobotController {
     /// Create a new robot controller with daemon config path
     pub fn new_with_config(daemon_config_path: &str) -> Result<Self> {
         let config = DaemonConfig::load_from_path(daemon_config_path)?;
-        
+        let (state_tx, _) = watch::channel(None);
+
         Ok(Self {
             config: config.clone(),
             daemon_config: config,
@@ -88,7 +92,13 @@ impl RobotController {
             monitor_output: None,
             state: RobotState::Disconnected,
             robot_status: RobotStatus::default(),
+            state_tx,
         })
+    }
+
+    /// Subscribe to RTDE state updates — used by the MQTT publisher.
+    pub fn subscribe_state(&self) -> watch::Receiver<Option<RobotStatus>> {
+        self.state_tx.subscribe()
     }
     
     /// Perform complete robot initialization sequence
@@ -401,8 +411,44 @@ impl RobotController {
         }
     }
     
+    /// Stop motion and clear interpreter buffer without shutting down the daemon.
+    /// Used by the MQTT stop handler.
+    pub fn rpc_abort(&mut self) -> Result<()> {
+        if let Some(primary_socket) = &mut self.primary_socket {
+            let abort_script = "halt\n";
+            primary_socket.write_all(abort_script.as_bytes())
+                .context("Failed to send RPC abort to primary socket")?;
+            info!("RPC abort sent through primary socket");
+            if let Some(interpreter) = &mut self.interpreter {
+                match interpreter.clear() {
+                    Ok(_) => info!("Interpreter buffer cleared after abort"),
+                    Err(e) => info!("Failed to clear interpreter buffer after abort: {}", e),
+                }
+            }
+            Ok(())
+        } else {
+            Err(anyhow!("Primary socket not connected"))
+        }
+    }
+
+    /// Abort the interpreter's current motion command.
+    pub async fn interpreter_abort(&mut self) -> Result<()> {
+        self.interpreter_mut()?.abort_move()?;
+        Ok(())
+    }
+
+    /// Send a URScript command to the interpreter. Returns CommandResult with .id.
+    pub async fn execute_interpreter_command(&mut self, cmd: &str) -> Result<crate::interpreter::CommandResult> {
+        self.interpreter_mut()?.execute_command(cmd)
+    }
+
+    /// Get the last executed command ID from the interpreter.
+    pub async fn get_last_executed_id(&mut self) -> Result<u32> {
+        self.interpreter_mut()?.get_last_executed_id()
+    }
+
     /// Process robot state data and output JSON monitoring
-    /// 
+    ///
     /// # Arguments
     /// * `joint_positions` - Joint angles in radians
     /// * `tcp_pose` - TCP pose [x, y, z, rx, ry, rz]
@@ -432,7 +478,8 @@ impl RobotController {
             joint_positions,
             last_updated: wire_timestamp,
         };
-        
+        let _ = self.state_tx.send(Some(self.robot_status.clone()));
+
         if let Some(monitor_output) = &mut self.monitor_output {
             // Check and output combined position data (TCP + joints)
             if monitor_output.should_output_position(tcp_pose, joint_positions, wire_timestamp) {

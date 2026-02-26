@@ -6,7 +6,7 @@
 //! - Sequential execution with completion tracking
 //! - Buffer management and cleanup
 
-use urd::{RobotController, CommandStream};
+use urd::{RobotController, CommandStream, MqttInterface};
 use anyhow::{Context, Result};
 use tracing::{info, error};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
@@ -57,6 +57,8 @@ async fn main() -> Result<()> {
     
     // Get monitoring setting from config
     let enable_monitoring = controller.daemon_config().command.monitor_execution;
+    let mqtt_config = controller.daemon_config().mqtt.clone();
+    let state_rx = controller.subscribe_state();
     
     // Perform full initialization sequence
     match controller.initialize(enable_monitoring).await {
@@ -89,6 +91,17 @@ async fn main() -> Result<()> {
         None
     };
     
+    // Start MQTT interface if configured
+    if let Some(mqtt_cfg) = mqtt_config {
+        let mqtt = MqttInterface::new(mqtt_cfg, Arc::clone(&controller), state_rx);
+        tokio::spawn(async move {
+            if let Err(e) = mqtt.run().await {
+                error!("MQTT interface error: {e}");
+            }
+        });
+        info!("MQTT interface started");
+    }
+
     // Create command stream with shared shutdown signal
     let mut stream = CommandStream::new_with_shared_controller(controller.clone(), shutdown_signal.clone());
     
