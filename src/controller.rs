@@ -411,6 +411,18 @@ impl RobotController {
         }
     }
     
+    /// Re-enter interpreter mode after a halt.
+    ///
+    /// Sends the interpreter mode script to the primary socket and reconnects
+    /// the interpreter client. Called by the MQTT stop handler so the daemon
+    /// is immediately ready for the next movej without needing a full reconnect.
+    pub async fn rearm_interpreter(&mut self) -> Result<()> {
+        self.start_interpreter_mode().await?;
+        self.validate_interpreter().await?;
+        info!("Interpreter re-armed");
+        Ok(())
+    }
+
     /// Stop motion and clear interpreter buffer without shutting down the daemon.
     /// Used by the MQTT stop handler.
     pub fn rpc_abort(&mut self) -> Result<()> {

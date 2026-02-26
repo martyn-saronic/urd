@@ -140,6 +140,12 @@ impl MqttInterface {
         if let Err(e) = ctrl.interpreter_abort().await {
             warn!("MQTT stop: interpreter abort failed: {e}");
         }
+        // Re-enter interpreter mode so the next movej works without needing
+        // a full reset. halt terminates the interpreter program on the robot;
+        // without this the interpreter port goes silent and movej hangs.
+        if let Err(e) = ctrl.rearm_interpreter().await {
+            error!("MQTT stop: failed to re-arm interpreter: {e}");
+        }
         drop(ctrl);
         // Reset so the next movej can proceed
         abort_signal.store(false, Ordering::SeqCst);

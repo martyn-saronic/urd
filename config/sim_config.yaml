@@ -24,7 +24,7 @@ publishing:
 
 command:
   monitor_execution: true
-  stream_robot_state: "dynamic"
+  stream_robot_state: true
 
 mqtt:
   broker_host: "localhost"
