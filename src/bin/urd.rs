@@ -91,8 +91,12 @@ async fn main() -> Result<()> {
         None
     };
     
-    // Start MQTT interface if configured
     if let Some(mqtt_cfg) = mqtt_config {
+        // --- MQTT mode: stdin is disabled ---
+        // MQTT is the exclusive command input; running stdin concurrently would
+        // allow commands from two sources to interleave and let Ctrl+C's
+        // emergency_abort interfere with in-flight MQTT moves.
+        info!("MQTT mode — stdin disabled");
         let mqtt = MqttInterface::new(mqtt_cfg, Arc::clone(&controller), state_rx);
         tokio::spawn(async move {
             if let Err(e) = mqtt.run().await {
@@ -100,38 +104,43 @@ async fn main() -> Result<()> {
             }
         });
         info!("MQTT interface started");
+
+        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl-c");
+        info!("Shutdown signal received");
+        shutdown_signal.store(true, Ordering::Relaxed);
+        if let Some(handle) = monitoring_handle {
+            let _ = handle.await;
+        }
+        let mut ctrl = controller.lock().await;
+        ctrl.shutdown().await.context("Failed during shutdown")?;
+    } else {
+        // --- stdin mode ---
+        let mut stream = CommandStream::new_with_shared_controller(
+            controller.clone(),
+            shutdown_signal.clone(),
+        );
+
+        match stream.run().await {
+            Ok(_) => info!("Command stream completed normally"),
+            Err(e) => {
+                error!("Command stream error: {}", e);
+                shutdown_signal.store(true, Ordering::Relaxed);
+                if let Some(handle) = monitoring_handle {
+                    let _ = handle.await;
+                }
+                return Err(e);
+            }
+        }
+
+        shutdown_signal.store(true, Ordering::Relaxed);
+        if let Some(handle) = monitoring_handle {
+            let _ = handle.await;
+        }
+
+        info!("Performing graceful shutdown");
+        stream.shutdown().await.context("Failed during shutdown")?;
     }
 
-    // Create command stream with shared shutdown signal
-    let mut stream = CommandStream::new_with_shared_controller(controller.clone(), shutdown_signal.clone());
-    
-    // Run command stream (now handles Ctrl+C internally for immediate abort)
-    match stream.run().await {
-        Ok(_) => {
-            info!("Command stream completed normally");
-        }
-        Err(e) => {
-            error!("Command stream error: {}", e);
-            // Signal monitoring to stop
-            shutdown_signal.store(true, Ordering::Relaxed);
-            if let Some(handle) = monitoring_handle {
-                let _ = handle.await;
-            }
-            return Err(e);
-        }
-    }
-    
-    // Signal monitoring to stop
-    shutdown_signal.store(true, Ordering::Relaxed);
-    if let Some(handle) = monitoring_handle {
-        let _ = handle.await;
-    }
-    
-    // Graceful shutdown
-    info!("Performing graceful shutdown");
-    stream.shutdown().await
-        .context("Failed during shutdown")?;
-    
     info!("Shutdown complete");
     Ok(())
 }

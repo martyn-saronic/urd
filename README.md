@@ -385,7 +385,7 @@ These commands provide JSON output for monitoring and bypass the robot interpret
 
 ## 📡 MQTT Interface
 
-The MQTT interface is a parallel command channel that runs alongside stdin. It is enabled by adding an `mqtt:` block to your config file. Both interfaces are active simultaneously — you can pipe commands via stdin and send MQTT commands at the same time.
+The MQTT interface is an exclusive command channel. When `mqtt:` is present in the config, stdin is **disabled** — the daemon accepts commands only via MQTT. This prevents control races between the two input sources (interleaved commands, a Ctrl+C `emergency_abort` killing an in-flight MQTT move, etc.).
 
 Requires a running MQTT broker (e.g. `mosquitto`). In the Nix dev shell, `mosquitto` is available directly.
 
