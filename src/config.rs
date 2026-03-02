@@ -47,7 +47,21 @@ pub struct DaemonConfig {
     pub publishing: PublishingConfig,
     pub command: CommandConfig,
     pub interpreter: Option<InterpreterConfig>,
+    pub mqtt: Option<MqttConfig>,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MqttConfig {
+    pub broker_host: String,
+    pub broker_port: u16,
+    #[serde(default = "default_topic_prefix")]
+    pub topic_prefix: String,
+    #[serde(default = "default_publish_rate_hz")]
+    pub publish_rate_hz: u32,
+}
+
+fn default_topic_prefix() -> String { "arm".to_string() }
+fn default_publish_rate_hz() -> u32 { 25 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PublishingConfig {

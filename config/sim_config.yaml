@@ -1,0 +1,33 @@
+---
+# Simulator configuration with MQTT enabled
+# Use with the UR10e docker simulator (localhost) + local mosquitto broker
+
+robot:
+  host: "localhost"
+  ports:
+    primary: 30001
+    rtde: 30004
+    dashboard: 29999
+  tcp_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  movement:
+    speed: 0.1
+    acceleration: 0.1
+    blend_radius: 0.01
+  connection:
+    timeout: 10.0
+    retry_attempts: 3
+    retry_delay: 2.0
+
+publishing:
+  pub_rate_hz: 10
+  decimal_places: 4
+
+command:
+  monitor_execution: true
+  stream_robot_state: true
+
+mqtt:
+  broker_host: "localhost"
+  broker_port: 1883
+  topic_prefix: "arm"
+  publish_rate_hz: 10

@@ -78,33 +78,31 @@ stop-sim
 URD follows a modular architecture with clear separation of concerns:
 
 ```
-┌─────────────────┐    ┌─────────────────┐
-│  Command Stream │    │  RTDE Monitor   │
-│                 │    │                 │
-│ • stdin input   │    │ • 125Hz data    │
-│ • URScript exec │    │ • State changes │
-│ • Sequential    │    │ • JSON output   │
-│ • Validation    │    │ • Rate limiting │
-└─────────────────┘    └─────────────────┘
-         │                       │
-         └───────┬───────────────┘
-                 │
-        ┌────────▼────────┐
-        │ Robot Controller│
-        │                 │
-        │ • Initialization│
-        │ • State mgmt    │
-        │ • Emergency stop│
-        │ • Coordination  │
-        └─────────────────┘
-                 │
-        ┌────────▼────────┐
-        │   UR Robot      │
-        │                 │
-        │ • Port 30001    │
-        │ • Port 30004    │
-        │ • Port 29999    │
-        └─────────────────┘
+ stdin ──────────────┐
+                     ▼
+              ┌─────────────────┐    ┌─────────────────┐
+              │  Command Stream │    │  RTDE Monitor   │
+              │  (stream.rs)    │    │                 │
+              │ • URScript exec │    │ • 125Hz data    │
+              │ • Sequential    │    │ • State changes │
+              │ • Validation    │    │ • JSON → stdout │
+              └────────┬────────┘    └────────┬────────┘
+                       │                      │ watch channel
+              ┌────────▼──────────────────────▼────────┐
+              │            Robot Controller             │
+              │                                        │
+              │  • Initialization  • Emergency stop    │
+              │  • State mgmt      • Coordination      │
+              └────────┬──────────────────────┬────────┘
+                       │                      │
+              ┌────────▼────────┐   ┌─────────▼────────┐
+              │    UR Robot     │   │  MQTT Interface  │
+              │                 │   │   (mqtt.rs)      │
+              │ • Port 30001    │   │                  │
+              │ • Port 30004    │   │ cmd sub ←────────┼── MQTT broker
+              │ • Port 29999    │   │ state pub ───────┼──► MQTT broker
+              │ • Port 30020    │   └──────────────────┘
+              └─────────────────┘
 ```
 
 ## 📦 Core Modules
@@ -154,6 +152,16 @@ Universal Robots interpreter mode client for validated command execution.
 - Command validation and rejection handling
 - Sequential execution tracking with completion IDs
 - Emergency abort signaling
+
+### `mqtt.rs`
+Optional MQTT pub/sub interface that runs alongside stdin. Disabled unless `mqtt:` is present in config.
+
+**Key Features:**
+- Subscribes to `{prefix}/cmd/{movej,stop,reset}` for incoming commands
+- Publishes position at configurable rate to `{prefix}/state/position`
+- Publishes robot mode/safety changes to `{prefix}/state/robot`
+- `stop` aborts in-flight motion and clears interpreter buffer without killing the daemon
+- `movej` polls for completion and respects concurrent `stop` commands
 
 ### `config.rs`
 YAML-based configuration system with unified settings.
@@ -261,6 +269,22 @@ publishing: {pub_rate_hz: 10, decimal_places: 4}
 command: {monitor_execution: true, stream_robot_state: "dynamic"}
 ```
 
+### MQTT Configuration (optional)
+
+Add an `mqtt:` section to any config file to enable the MQTT interface. Omitting the section entirely disables it with no overhead.
+
+```yaml
+mqtt:
+  broker_host: "localhost"   # MQTT broker hostname or IP
+  broker_port: 1883          # MQTT broker port
+  topic_prefix: "arm"        # Topic namespace (default: "arm")
+  publish_rate_hz: 25        # State publish rate in Hz (default: 25)
+```
+
+The `topic_prefix` controls all topic names. With the default `"arm"`:
+- Subscribes: `arm/cmd/movej`, `arm/cmd/stop`, `arm/cmd/reset`
+- Publishes: `arm/state/position`, `arm/state/robot`
+
 ## 🖥️ Command Line Interface
 
 URD provides a clean command line interface with help:
@@ -358,6 +382,116 @@ URD provides special @ commands for diagnostics and recovery that don't interfer
 ```
 
 These commands provide JSON output for monitoring and bypass the robot interpreter buffer entirely.
+
+## 📡 MQTT Interface
+
+The MQTT interface is an exclusive command channel. When `mqtt:` is present in the config, stdin is **disabled** — the daemon accepts commands only via MQTT. This prevents control races between the two input sources (interleaved commands, a Ctrl+C `emergency_abort` killing an in-flight MQTT move, etc.).
+
+Requires a running MQTT broker (e.g. `mosquitto`). In the Nix dev shell, `mosquitto` is available directly.
+
+### Command Topics (urd subscribes)
+
+#### `{prefix}/cmd/movej`
+
+Execute a joint move. Joints are specified in **degrees**; velocity and acceleration are also in degrees/s and degrees/s².
+
+```json
+{
+  "joints_deg": [0.0, -90.0, 0.0, -90.0, 0.0, 0.0],
+  "velocity_deg_s": 60.0,
+  "acceleration_deg_s2": 800.0
+}
+```
+
+Or with an explicit duration (preferred for coordinated multi-axis motion — overrides vel/accel in URScript):
+
+```json
+{
+  "joints_deg": [0.0, -90.0, 0.0, -90.0, 0.0, 0.0],
+  "duration_s": 2.35
+}
+```
+
+`velocity_deg_s` and `acceleration_deg_s2` are optional — defaults are 60°/s and 800°/s² respectively. If `duration_s` is provided, vel/accel fields are ignored.
+
+Each `movej` command blocks internally until the robot reaches the target (or until a `stop` command interrupts it). Concurrent `movej` commands are queued on the interpreter; send `stop` to clear the queue.
+
+#### `{prefix}/cmd/stop`
+
+Immediately abort any in-flight motion and clear the interpreter command buffer. The daemon remains running and ready for the next command.
+
+```json
+{}
+```
+
+Internally this sends `halt` to the primary socket and `clear_interpreter()` to the interpreter port — equivalent to the stdin `@clear` sentinel.
+
+#### `{prefix}/cmd/reset`
+
+Reconnect to the robot. Useful after an e-stop, power cycle, or protective stop has dropped the connections.
+
+```json
+{}
+```
+
+### State Topics (urd publishes)
+
+#### `{prefix}/state/position`
+
+Published at `publish_rate_hz` (default 25 Hz). Always published; not filtered by motion state.
+
+```json
+{
+  "joint_positions_deg": [0.0, -90.0, 0.0, -90.0, 0.0, 0.0],
+  "tcp_pose": [0.1, 0.5, 0.9, 0.3, 0.8, 0.2],
+  "timestamp": 1703123456.789
+}
+```
+
+- `joint_positions_deg` — joint angles in **degrees** (converted from RTDE `actual_q`)
+- `tcp_pose` — `[x_m, y_m, z_m, rx_rad, ry_rad, rz_rad]` from RTDE `actual_TCP_pose`
+- `timestamp` — Unix epoch seconds (wall clock when data was received by daemon)
+
+#### `{prefix}/state/robot`
+
+Published **only on change** (robot mode or safety mode transitions). QoS 0.
+
+```json
+{
+  "robot_mode": "RUNNING",
+  "safety_mode": "NORMAL",
+  "runtime_state": "PLAYING",
+  "is_moving": true,
+  "timestamp": 1703123456.789
+}
+```
+
+- `is_moving` is `true` when `runtime_state == "PLAYING"`
+- See the Monitoring Modes section for valid mode name values
+
+### Quick Test with mosquitto
+
+```bash
+# Start broker (in nix develop shell)
+mosquitto -v
+
+# Subscribe to all state topics
+mosquitto_sub -t "arm/state/#" -v
+
+# Send a movej
+mosquitto_pub -t "arm/cmd/movej" \
+  -m '{"joints_deg":[0,-90,0,-90,0,0],"velocity_deg_s":30}'
+
+# Duration-based move (useful for synchronised gantry+arm motion)
+mosquitto_pub -t "arm/cmd/movej" \
+  -m '{"joints_deg":[0,-45,0,-90,0,0],"duration_s":3.0}'
+
+# Abort mid-move
+mosquitto_pub -t "arm/cmd/stop" -m '{}'
+
+# Reconnect after e-stop
+mosquitto_pub -t "arm/cmd/reset" -m '{}'
+```
 
 ## 🔄 Usage Examples
 
@@ -458,4 +592,5 @@ regex = "1.0"                       # Pattern matching
 tracing = "0.1"                     # Structured logging
 tracing-subscriber = "0.3"          # Log formatting
 clap = { features = ["derive"] }    # Command line argument parsing
+rumqttc = "0.24"                    # MQTT client (async, tokio-native)
 ```
